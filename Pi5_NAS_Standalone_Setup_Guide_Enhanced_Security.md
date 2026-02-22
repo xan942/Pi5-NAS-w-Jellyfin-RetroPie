@@ -14,15 +14,28 @@
 
 ## Table of Contents
 
+### Core Phases (Foundation)
 1. [Architecture Overview](#architecture-overview)
 2. [Phase 1: OS Installation & NVMe Setup](#phase-1-os-installation--nvme-setup)
 3. [Phase 2: LUKS Encryption (At-Rest Security)](#phase-2-luks-encryption-at-rest-security)
 4. [Phase 3: Jellyfin Media Server](#phase-3-jellyfin-media-server)
 5. [Phase 4: RetroPie Game Emulator](#phase-4-retropie-game-emulator)
-6. [Phase 5: Remote Access Setup (Standalone)](#phase-5-remote-access-setup-standalone)
-7. [Phase 6: Networking & Firewall](#phase-6-networking--firewall)
-8. [Phase 7: Monitoring & Backups](#phase-7-monitoring--backups)
-9. [Future Bridge Integration](#future-bridge-integration)
+6. [Phase 5: Remote Access Setup (WireGuard VPN)](#phase-5-remote-access-setup-standalone---wireguard-vpn)
+
+### Security Hardening Layers (Enterprise-Grade)
+7. [Phase 6: Layer 1 - Authentication & Access Control](#phase-6-layer-1-authentication--access-control)
+8. [Phase 7: Layer 3 - Intrusion Detection](#phase-7-layer-3-intrusion-detection)
+9. [Phase 8: Layer 4 - Monitoring & Logging](#phase-8-layer-4-monitoring--logging)
+10. [Phase 9: Layer 5 - Network Hardening](#phase-9-layer-5-network-hardening)
+11. [Phase 10: Layer 6 - System Hardening](#phase-10-layer-6-system-hardening)
+12. [Phase 11: Networking & Firewall (Enhanced)](#phase-11-networking--firewall-enhanced)
+
+### Monitoring & Backups
+13. [Phase 12: Monitoring & Backups (Basic)](#phase-12-monitoring--backups-basic)
+
+### Future Implementation
+14. [Phase 13 (Save for Later): Layer 2 - Enhanced Encrypted Backups](#phase-13-save-for-later-layer-2-enhanced-encrypted-backups)
+15. [Future Bridge Integration](#future-bridge-integration)
 
 ---
 
@@ -976,9 +989,811 @@ Your current WireGuard setup:
 
 ---
 
-## Phase 6: Networking & Firewall
+---
 
-### Step 6.1: Configure UFW Firewall
+## Phase 6: Layer 1 - Authentication & Access Control
+
+**Purpose:** Enterprise-grade access control with nginx reverse proxy, 2FA, and IP whitelisting
+
+### Step 6.1: Install nginx Reverse Proxy
+
+```bash
+# Install nginx
+sudo apt-get install -y nginx
+
+# Create nginx configuration directory
+sudo mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
+
+# Enable nginx
+sudo systemctl enable nginx
+sudo systemctl start nginx
+```
+
+### Step 6.2: Install 2FA (TOTP-based Authentication)
+
+```bash
+# Install libpam-google-authenticator
+sudo apt-get install -y libpam-google-authenticator qrencode
+
+# Generate 2FA secret for ubuntu user
+google-authenticator -t -d -w 3 -r 3 -R 30
+
+# Follow the prompts:
+# 1. Scan QR code with authenticator app (Google Authenticator, Authy, etc.)
+# 2. Save emergency scratch codes securely
+# 3. Confirm by entering a code from your app
+
+# Save configuration
+# (This creates ~/.google_authenticator with your secret)
+```
+
+### Step 6.3: Enable 2FA for SSH
+
+```bash
+# Edit PAM SSH configuration
+sudo nano /etc/pam.d/sshd
+
+# Add at the top:
+auth required pam_google_authenticator.so nullok sequential=deny
+
+# Save (Ctrl+O, Enter, Ctrl+X)
+
+# Edit SSH configuration
+sudo nano /etc/ssh/sshd_config
+
+# Find: ChallengeResponseAuthentication no
+# Change to: ChallengeResponseAuthentication yes
+
+# Save and restart SSH
+sudo systemctl restart sshd
+
+# Test 2FA: ssh -p 2222 ubuntu@pi.local
+# Will prompt for password, then TOTP code
+```
+
+### Step 6.4: Configure nginx with 2FA Reverse Proxy
+
+```bash
+# Create nginx config for Jellyfin
+sudo nano /etc/nginx/sites-available/jellyfin
+
+upstream jellyfin {
+    server 127.0.0.1:8096;
+}
+
+# Rate limiting
+limit_req_zone $binary_remote_addr zone=jellyfin_limit:10m rate=10r/s;
+
+server {
+    listen 8080;
+    server_name pi.local;
+    
+    # Security headers
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    
+    # Rate limiting
+    limit_req zone=jellyfin_limit burst=20 nodelay;
+    
+    location / {
+        proxy_pass http://jellyfin;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        
+        # Timeouts for streaming
+        proxy_connect_timeout 600s;
+        proxy_send_timeout 600s;
+        proxy_read_timeout 600s;
+    }
+}
+
+# Enable site
+sudo ln -s /etc/nginx/sites-available/jellyfin /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl restart nginx
+```
+
+### Step 6.5: IP Whitelisting (Only Allow NYC IP through VPN)
+
+```bash
+# Get your NYC public IP when connected to WireGuard VPN
+# From your NYC laptop while VPN is on:
+curl ifconfig.me
+# Example: 185.220.101.50
+
+# Edit UFW to whitelist only your VPN IP for SSH
+sudo ufw delete allow 2222/tcp
+sudo ufw allow from 185.220.101.50 to any port 2222 comment "SSH from NYC via WireGuard"
+
+# Verify
+sudo ufw status | grep 2222
+# Should show: 185.220.101.50 2222/tcp ...
+
+# For Jellyfin, allow from VPN network range (if using Headscale later)
+# Allow from WireGuard VPN interface
+sudo ufw allow in on wg0 to any port 8096 comment "Jellyfin via WireGuard"
+```
+
+### Step 6.6: Verify 2FA + Reverse Proxy Setup
+
+```bash
+# Test Jellyfin through nginx proxy (from local network)
+curl -v http://pi.local:8080
+# Should show nginx proxy response
+
+# Test SSH with 2FA
+ssh -p 2222 ubuntu@pi.local
+# Should prompt for password, then TOTP code
+
+# Test from NYC (through WireGuard)
+# 1. Connect WireGuard on NYC laptop
+# 2. SSH with 2FA: ssh -p 2222 ubuntu@pi.local
+```
+
+---
+
+## Phase 7: Layer 3 - Intrusion Detection
+
+**Purpose:** Detect unauthorized file changes and system intrusions
+
+### Step 7.1: Install AIDE (File Integrity Monitoring)
+
+```bash
+# Install AIDE
+sudo apt-get install -y aide aide-common
+
+# Initialize AIDE database (takes 5-10 minutes)
+sudo aideinit
+
+# Move database to secure location
+sudo mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db
+
+# Create daily check script
+sudo nano /etc/cron.daily/aide-check
+
+#!/bin/bash
+/usr/bin/aide --check > /var/log/aide/daily_check.log 2>&1
+if [ $? -ne 0 ]; then
+    echo "AIDE detected file changes" | mail -s "AIDE Alert: File Integrity Violation" root
+fi
+
+# Make executable
+sudo chmod +x /etc/cron.daily/aide-check
+```
+
+### Step 7.2: Install auditd (System Call Logging)
+
+```bash
+# Install audit daemon
+sudo apt-get install -y auditd audispd-plugins
+
+# Enable auditd
+sudo systemctl enable auditd
+sudo systemctl start auditd
+
+# Add audit rules for critical files
+sudo nano /etc/audit/rules.d/pi-nas.rules
+
+# Monitor SSH directory
+-w /etc/ssh/ -p wa -k ssh_config_changes
+
+# Monitor system calls
+-a always,exit -F arch=b64 -S execve -k exec
+
+# Monitor user/group changes
+-w /etc/passwd -p wa -k passwd_changes
+-w /etc/group -p wa -k group_changes
+
+# Monitor sudo usage
+-w /var/log/auth.log -p wa -k auth_log_changes
+
+# Save and load rules
+sudo service auditd restart
+
+# View audit logs
+sudo tail -f /var/log/audit/audit.log
+```
+
+### Step 7.3: Configure chroot Jails for Services (Optional - Advanced)
+
+```bash
+# Create chroot environment for Samba (optional)
+sudo mkdir -p /var/chroot/samba
+
+# Basic chroot setup (advanced - only if needed)
+# Most users can skip this for initial deployment
+```
+
+---
+
+## Phase 8: Layer 4 - Monitoring & Logging
+
+**Purpose:** Centralized logging, security alerts, and log analysis
+
+### Step 8.1: Install rsyslog (Centralized Logging)
+
+```bash
+# Install rsyslog
+sudo apt-get install -y rsyslog
+
+# Configure rsyslog for centralized collection
+sudo nano /etc/rsyslog.d/99-pi-nas.conf
+
+# Collect logs from all services
+:programname, isequal, "jellyfin" /var/log/jellyfin.log
+:programname, isequal, "sshd" /var/log/ssh-auth.log
+:programname, isequal, "sudo" /var/log/sudo.log
+:programname, isequal, "fail2ban" /var/log/fail2ban.log
+
+# Security event logging
+auth,authpriv.* /var/log/auth-security.log
+:msg, contains, "AIDE" /var/log/aide-alerts.log
+:msg, contains, "auditd" /var/log/audit.log
+
+# Enable rsyslog
+sudo systemctl enable rsyslog
+sudo systemctl restart rsyslog
+```
+
+### Step 8.2: Security Event Alerting
+
+```bash
+# Install mail utilities for alerts
+sudo apt-get install -y mailutils
+
+# Create alert script
+sudo nano /usr/local/bin/security-alert.sh
+
+#!/bin/bash
+# Monitor for security events
+
+LOG_FILE="/var/log/auth-security.log"
+ALERT_EMAIL="root"
+
+# Check for failed SSH attempts
+tail -f $LOG_FILE | grep "Failed password" | while read line
+do
+    echo "SSH Attack Detected: $line" | \
+    mail -s "🚨 Security Alert: SSH Intrusion Attempt" $ALERT_EMAIL
+done
+
+# Check AIDE alerts
+tail -f /var/log/aide-alerts.log | while read line
+do
+    echo "File Integrity Violation: $line" | \
+    mail -s "🚨 Security Alert: File Changed" $ALERT_EMAIL
+done
+
+# Make executable
+sudo chmod +x /usr/local/bin/security-alert.sh
+
+# Run as service
+sudo nano /etc/systemd/system/security-alerts.service
+
+[Unit]
+Description=Security Event Alerting
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/security-alert.sh
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+
+# Enable and start
+sudo systemctl enable security-alerts
+sudo systemctl start security-alerts
+```
+
+### Step 8.3: Install Tripwire (Filesystem Integrity)
+
+```bash
+# Install Tripwire
+sudo apt-get install -y tripwire
+
+# Initialize Tripwire
+sudo tripwire --init
+# Follow prompts to create database
+
+# Run daily check
+sudo nano /etc/cron.daily/tripwire-check
+
+#!/bin/bash
+/usr/sbin/tripwire --check | mail -s "Tripwire Daily Report" root
+
+sudo chmod +x /etc/cron.daily/tripwire-check
+```
+
+### Step 8.4: Log Analysis Setup
+
+```bash
+# Install logwatch for daily log analysis
+sudo apt-get install -y logwatch
+
+# Configure logwatch
+sudo nano /etc/logwatch/conf/logwatch.conf
+
+Output = mail
+Format = html
+MailTo = root
+Detail = High
+Range = Yesterday
+
+# Enable daily reports
+sudo cp /usr/share/logwatch/default.conf/logwatch.conf /etc/logwatch/conf/
+
+# Manual log analysis commands
+# View failed SSH attempts
+sudo grep "Failed password" /var/log/auth.log | wc -l
+
+# View sudo usage
+sudo grep "sudo" /var/log/auth.log
+
+# View Fail2ban bans
+sudo fail2ban-client status sshd
+```
+
+---
+
+## Phase 9: Layer 5 - Network Hardening
+
+**Purpose:** SSL/TLS encryption, DNS privacy, and MAC filtering
+
+### Step 9.1: Install SSL/TLS Certificates (Self-Signed)
+
+```bash
+# Generate self-signed certificate for Jellyfin
+sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+  -keyout /etc/ssl/private/pi-nas.key \
+  -out /etc/ssl/certs/pi-nas.crt
+
+# When prompted:
+# Country: US
+# State: California
+# Locality: LA
+# Organization: Personal NAS
+# CN: pi.local
+
+# Set permissions
+sudo chmod 600 /etc/ssl/private/pi-nas.key
+sudo chmod 644 /etc/ssl/certs/pi-nas.crt
+
+# Configure nginx for HTTPS
+sudo nano /etc/nginx/sites-available/jellyfin
+
+server {
+    listen 443 ssl http2;
+    server_name pi.local;
+    
+    ssl_certificate /etc/ssl/certs/pi-nas.crt;
+    ssl_certificate_key /etc/ssl/private/pi-nas.key;
+    
+    # Strong SSL settings
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+    
+    # Redirect HTTP to HTTPS
+    error_page 497 =301 https://$host:$server_port$request_uri;
+    
+    location / {
+        proxy_pass http://jellyfin;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+
+# Reload nginx
+sudo systemctl reload nginx
+```
+
+### Step 9.2: DNS over HTTPS (DoH) Forcing
+
+```bash
+# Edit resolv.conf to use DoH provider
+sudo nano /etc/resolv.conf
+
+# Add Cloudflare DoH
+nameserver 1.1.1.1
+nameserver 1.0.0.1
+
+# Make immutable (prevent ISP DNS hijacking)
+sudo chattr +i /etc/resolv.conf
+
+# Verify
+sudo chattr -l /etc/resolv.conf
+# Should show: immutable
+```
+
+### Step 9.3: MAC Filtering on Samba (Optional)
+
+```bash
+# Get MAC addresses of trusted devices
+# From each trusted device:
+ip link show | grep ether
+# Example: e8:48:b8:12:34:56
+
+# Update Samba config for MAC filtering
+sudo nano /etc/samba/smb.conf
+
+[global]
+   # ... existing config ...
+   
+   # Allow only trusted MACs
+   hosts allow = 192.168.1.0/24 e8:48:b8:12:34:56
+   hosts deny = ALL
+
+# Restart Samba
+sudo systemctl restart smbd
+```
+
+---
+
+## Phase 10: Layer 6 - System Hardening
+
+**Purpose:** Kernel hardening, AppArmor, and automated security updates
+
+### Step 10.1: Install & Configure AppArmor (Mandatory Access Control)
+
+```bash
+# Install AppArmor
+sudo apt-get install -y apparmor apparmor-utils apparmor-profiles apparmor-profiles-extra
+
+# Enable AppArmor
+sudo systemctl enable apparmor
+sudo systemctl start apparmor
+
+# Create AppArmor profile for Jellyfin
+sudo nano /etc/apparmor.d/usr.bin.jellyfin
+
+#include <tunables/global>
+
+/usr/bin/jellyfin {
+  #include <abstractions/base>
+  #include <abstractions/nameservice>
+  
+  /mnt/nas_storage/jellyfin/** rw,
+  /var/lib/jellyfin/** rw,
+  /var/cache/jellyfin/** rw,
+  /proc/sys/kernel/random/uuid r,
+  /sys/kernel/debug/tracepoints/syscalls/** r,
+  
+  deny /etc/shadow rwklx,
+  deny /root/** rwklx,
+}
+
+# Load and enforce profile
+sudo apparmor_parser -r /etc/apparmor.d/usr.bin.jellyfin
+sudo aa-enforce /usr/bin/jellyfin
+
+# Check status
+sudo aa-status | grep jellyfin
+```
+
+### Step 10.2: Automated Security Updates
+
+```bash
+# Install unattended-upgrades
+sudo apt-get install -y unattended-upgrades
+
+# Configure automatic updates
+sudo nano /etc/apt/apt.conf.d/50unattended-upgrades
+
+Unattended-Upgrade::Allowed-Origins {
+    "${distro_id}:${distro_codename}-security";
+    "${distro_id}ESMApps:${distro_codename}-apps-security";
+};
+
+Unattended-Upgrade::Package-Blacklist {
+};
+
+// Auto-reboot if needed
+Unattended-Upgrade::Automatic-Reboot "true";
+Unattended-Upgrade::Automatic-Reboot-Time "02:00";
+
+// Send email on updates
+Unattended-Upgrade::Mail "root";
+Unattended-Upgrade::MailReport "on-change";
+
+# Enable auto-updates
+sudo nano /etc/apt/apt.conf.d/20auto-upgrades
+
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Download-Upgradeable-Packages "1";
+APT::Periodic::AutocleanInterval "7";
+APT::Periodic::Unattended-Upgrade "1";
+
+# Verify
+sudo systemctl enable apt-daily.service
+sudo systemctl enable apt-daily-upgrade.service
+```
+
+### Step 10.3: Immutable File Flags (Prevent Accidental Deletion)
+
+```bash
+# Mark critical config files as immutable
+sudo chattr +i /etc/ssh/sshd_config
+sudo chattr +i /etc/samba/smb.conf
+sudo chattr +i /etc/crypttab
+sudo chattr +i /etc/fstab
+
+# Mark important directories
+sudo chattr -R +i /etc/ssl/certs/
+sudo chattr -R +i /etc/ssl/private/
+
+# Verify immutable flags
+sudo lsattr -l /etc/ssh/sshd_config
+# Should show: immutable
+
+# If you need to modify, first remove flag:
+# sudo chattr -i /path/to/file
+# [edit file]
+# sudo chattr +i /path/to/file
+```
+
+### Step 10.4: Disable Unused Kernel Modules
+
+```bash
+# View loaded modules
+lsmod
+
+# Create blacklist for unused modules
+sudo nano /etc/modprobe.d/blacklist-pi-nas.conf
+
+# Disable uncommon network protocols
+blacklist dccp
+blacklist sctp
+blacklist rds
+blacklist tipc
+
+# Disable uncommon filesystems
+blacklist cramfs
+blacklist freevxfs
+blacklist jffs2
+blacklist hfs
+blacklist hfsplus
+
+# Disable USB storage (if not needed)
+# blacklist usb-storage
+
+# Apply changes
+sudo update-initramfs -u
+```
+
+### Step 10.5: Secure Boot Configuration
+
+```bash
+# Check current secure boot status
+sudo mokutil --sb-state
+
+# If supported, enable secure boot (this varies by Pi model)
+# Note: Pi 5 has limited secure boot support
+# Focus on other hardening measures
+
+# Verify kernel protections
+cat /proc/cmdline
+# Look for: nosmep nopti
+
+# Improve kernel command line (if needed)
+sudo nano /boot/firmware/cmdline.txt
+
+# Add security parameters:
+# apparmor=1 security=apparmor slub_debug=FZP
+
+# Reboot to apply
+sudo reboot
+```
+
+---
+
+## Phase 11: Networking & Firewall (Enhanced)
+
+### Step 11.1: Enhanced UFW Configuration
+
+```bash
+# Enable UFW
+sudo ufw enable
+
+# Default policies
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+
+# Allow SSH (only from NYC WireGuard IP)
+sudo ufw allow from 185.220.101.50 to any port 2222 comment "SSH NYC VPN"
+
+# Allow Jellyfin (HTTPS via nginx)
+sudo ufw allow 443/tcp comment "HTTPS Jellyfin"
+sudo ufw allow in on wg0 to any port 443 comment "Jellyfin via WireGuard"
+
+# Allow Samba (only from LAN/VPN)
+sudo ufw allow from 192.168.0.0/16 to any port 445 comment "Samba LAN"
+sudo ufw allow in on wg0 to any port 445 comment "Samba VPN"
+
+# Allow WireGuard
+sudo ufw allow 51820/udp comment "WireGuard VPN"
+
+# Block all other traffic
+sudo ufw default deny forward
+
+# Enable logging
+sudo ufw logging on
+sudo ufw logging medium
+
+# Verify rules
+sudo ufw status numbered
+```
+
+### Step 11.2: Rate Limiting
+
+```bash
+# Add rate limiting rules
+sudo ufw limit 2222/tcp comment "SSH rate limit"
+sudo ufw limit 443/tcp comment "HTTPS rate limit"
+
+# Advanced rate limiting (iptables)
+sudo iptables -A INPUT -p tcp --dport 2222 -m limit --limit 5/minute --limit-burst 10 -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 2222 -j DROP
+
+# Make persistent
+sudo apt-get install -y iptables-persistent
+sudo iptables-save | sudo tee /etc/iptables/rules.v4
+```
+
+---
+
+## Phase 12: Monitoring & Backups (Basic)
+
+### Step 12.1: Health Check Script
+
+```bash
+# Create comprehensive health check
+nano ~/health_check.sh
+
+#!/bin/bash
+echo "=== Pi 5 NAS Security & Health Check ==="
+echo ""
+echo "Encryption Status:"
+sudo cryptsetup status nas_encrypted
+echo ""
+echo "WireGuard VPN:"
+sudo wg show
+echo ""
+echo "SSH 2FA Status:"
+sudo grep "pam_google_authenticator" /etc/pam.d/sshd
+echo ""
+echo "AIDE Integrity:"
+sudo aide --check | tail -20
+echo ""
+echo "Fail2ban Status:"
+sudo fail2ban-client status
+echo ""
+echo "AppArmor Status:"
+sudo aa-status | grep jellyfin
+echo ""
+echo "UFW Firewall:"
+sudo ufw status
+echo ""
+echo "Disk Usage:"
+df -h /mnt/nas_storage
+echo ""
+echo "Temperature:"
+vcgencmd measure_temp
+echo ""
+echo "Security Logs:"
+sudo tail -20 /var/log/auth-security.log
+
+chmod +x ~/health_check.sh
+```
+
+### Step 12.2: Daily Security Summary
+
+```bash
+# Create daily security report
+nano ~/daily_security_report.sh
+
+#!/bin/bash
+DATE=$(date +%Y-%m-%d_%H:%M:%S)
+REPORT="/var/log/security_report_$DATE.log"
+
+{
+    echo "=== Daily Security Report ==="
+    echo "Date: $DATE"
+    echo ""
+    echo "Failed SSH Attempts:"
+    grep "Failed password" /var/log/auth.log | tail -10
+    echo ""
+    echo "Sudo Usage:"
+    grep "sudo" /var/log/auth.log | tail -10
+    echo ""
+    echo "File Integrity Changes (AIDE):"
+    sudo aide --check 2>&1 | grep -E "changed|added|removed" | head -10
+    echo ""
+    echo "Firewall Blocks:"
+    sudo tail -20 /var/log/ufw.log
+    echo ""
+    echo "Active Connections:"
+    ss -an | grep ESTABLISHED | wc -l
+} > $REPORT
+
+# Email report
+mail -s "Security Report - $DATE" root < $REPORT
+
+chmod +x ~/daily_security_report.sh
+
+# Schedule daily at 6 AM
+crontab -e
+# Add: 0 6 * * * ~/daily_security_report.sh
+```
+
+### Step 12.3: Basic Backup Strategy
+
+```bash
+# Create basic backup script (see Phase 13 for enhanced version)
+nano ~/backup.sh
+
+#!/bin/bash
+BACKUP_DIR="/mnt/nas_storage/backups"
+DATE=$(date +%Y%m%d_%H%M%S)
+
+# Backup critical configs
+tar -czf $BACKUP_DIR/configs_$DATE.tar.gz \
+  /etc/ssh/sshd_config \
+  /etc/samba/smb.conf \
+  /etc/nginx/sites-available/ \
+  /etc/ssl/certs/ \
+  /etc/audit/rules.d/
+
+# Generate checksums
+sha256sum $BACKUP_DIR/configs_$DATE.tar.gz > $BACKUP_DIR/configs_$DATE.sha256
+
+echo "Backup completed: $DATE"
+
+chmod +x ~/backup.sh
+
+# Schedule daily
+crontab -e
+# Add: 0 3 * * * ~/backup.sh
+```
+
+---
+
+## Phase 13 (Save for Later): Layer 2 - Enhanced Encrypted Backups
+
+**⚠️ Phase 13 - SAVE FOR LATER IMPLEMENTATION**
+
+This phase adds advanced backup capabilities. Implement this after your system is fully deployed and stable (Week 8+).
+
+### Features (To Implement Later):
+- [ ] Encrypted backups to external USB drive (off-site)
+- [ ] Backup encryption separate from LUKS (double-encrypted)
+- [ ] Automated backup verification (checksums)
+- [ ] Backup integrity checks (detect corruption)
+- [ ] Multi-generational backups (keep 7 daily, 4 weekly, 12 monthly)
+- [ ] Automated backup restoration tests
+- [ ] Cloud backup integration (optional)
+
+### When Ready, See This Section:
+
+```bash
+# Create LUKS-encrypted USB backup volume
+# Configure automated backup verification
+# Setup multi-generational backup retention
+# Test backup restoration
+
+# This will be detailed in Phase 13 (future)
+```
+
+**For now:** Use Phase 12 basic backups. You can upgrade to Phase 13 later.
+
+---
 
 ```bash
 # Enable UFW
