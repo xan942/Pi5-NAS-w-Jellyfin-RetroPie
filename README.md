@@ -34,6 +34,34 @@ A complete setup guide for building an **enterprise-grade encrypted private medi
 
 ---
 
+## 📑 Table of Contents
+
+**Getting Started**
+- [Quick Start](#-quick-start) — Prerequisites, architecture, 3-step setup
+- [Documentation](#-documentation) — Guide locations and descriptions
+
+**System Design**
+- [Architecture Overview](#-architecture-overview) — Hardware, security layers, services
+- [Security Features](#-security-features) — 6 layers explained, future enhancements
+- [12 Implementation Phases](#-12-implementation-phases) — Timeline, phases, deliverables
+
+**Implementation & Operations**
+- [Deployment Timeline](#-deployment-timeline) — Week-by-week breakdown
+- [Security Checklist](#-security-checklist) — Pre-production verification
+- [Performance Expectations](#-performance-expectations) — CPU, RAM, network impact
+- [Security Grade Progression](#-security-grade-progression) — Before/after comparison
+
+**Integration & Support**
+- [Bridge Router Integration](#-integration-with-pi-5-bridge-router) — Standalone vs. Bridge mode
+- [Quick Troubleshooting](#-quick-troubleshooting) — Common issues & fixes
+- [Project Structure](#-project-structure) — File organization
+- [Summary](#-summary) — What you're building, investment, grade
+
+**Resources**
+- [Support & Resources](#-support--resources) — Documentation, external links
+
+---
+
 ## ⚡ Quick Start
 
 ### Prerequisites
