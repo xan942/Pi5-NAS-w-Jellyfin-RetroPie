@@ -1138,15 +1138,14 @@ sudo ufw allow from 100.64.0.0/10 to any port 19999
 - Raspberry Pi: https://www.raspberrypi.com/
 - Kingston SSD: https://www.kingston.com/en/support
 - Waveshare: https://www.waveshare.com/
-```
 
----
+
 
 ## SUMMARY 
 
 ### What You've Built
 
-```
+```bash
 ✅ ENTERPRISE SECURITY (6 layers deep)
    ├─ LUKS encryption (AES-256)
    ├─ SSH key-based auth
