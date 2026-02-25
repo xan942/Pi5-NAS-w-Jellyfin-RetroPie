@@ -53,7 +53,7 @@ RESULT:   ✅ LUKS encryption (AES-256)
 
 **Quick Links Below:**
 
-1. [Architecture & Design](#architecture-&-design) - Understand the system
+1. [Architecture & Design](#architecture-and-design) - Understand the system
 2. [Technology Reasoning](#technology-reasoning) - Why each choice
 3. [Phases 1-9 Configuration](#phases-1-9-configuration) - Core NAS setup
 4. [Jellyfin Security](#jellyfin-security) - Web access hardening  
@@ -64,7 +64,7 @@ RESULT:   ✅ LUKS encryption (AES-256)
 
 ---
 
-## Architecture & Design
+## Architecture and Design
 
 ### Hardware Setup
 
