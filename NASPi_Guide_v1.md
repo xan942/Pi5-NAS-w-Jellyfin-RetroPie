@@ -64,7 +64,7 @@ RESULT:   ✅ LUKS encryption (AES-256)
 
 ---
 
-## ARCHITECTURE & DESIGN
+## Architecture & Design
 
 ### Hardware Setup
 
@@ -165,7 +165,7 @@ LAYER 1: Authentication & Access
 
 ---
 
-## TECHNOLOGY REASONING
+## Technology Reasoning
 
 ### Why Raspberry Pi 5?
 
