@@ -1,4 +1,4 @@
-# Pi 5 NAS Standalone Setup
+#(OLD - refer to NASPi_Guide) Pi 5 NAS Standalone Setup
 ## Secure Encrypted NAS + Jellyfin + RetroPie + Enterprise Security
 
 > **Enterprise-grade private media server and game emulator on Raspberry Pi 5 with LUKS encryption, WireGuard VPN, 2FA, AIDE intrusion detection, automated security updates, and defense-in-depth hardening (6 security layers).**
