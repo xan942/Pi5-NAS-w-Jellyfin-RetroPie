@@ -53,7 +53,7 @@ RESULT:   ✅ LUKS encryption (AES-256)
 
 **Quick Links Below:**
 
-1. [Architecture & Design](#architecture-design) - Understand the system
+1. [Architecture & Design](#architecture-&-design) - Understand the system
 2. [Technology Reasoning](#technology-reasoning) - Why each choice
 3. [Phases 1-9 Configuration](#phases-1-9-configuration) - Core NAS setup
 4. [Jellyfin Security](#jellyfin-security) - Web access hardening  
@@ -547,7 +547,7 @@ crontab -e
 
 ---
 
-## JELLYFIN SECURITY (Part 3)
+## Jellyfin Security
 
 ### 10 Security Issues Identified & Fixed
 
@@ -696,7 +696,7 @@ tail -f /var/log/jellyfin/log_*.txt | grep -i auth
 
 ---
 
-## MANAGEMENT DASHBOARD (Part 4)
+## Management Dashboard
 
 ### Quick 15-Minute Install
 
@@ -811,7 +811,7 @@ Morning Check (2 minutes):
 
 ---
 
-## TROUBLESHOOTING (Part 5)
+## TROUBLESHOOTING 
 
 ### Installation Issues
 
@@ -1028,7 +1028,7 @@ sudo systemctl restart netdata
 
 ---
 
-## REFERENCES (Part 6)
+## REFERENCES 
 
 ### All Your Documentation
 
@@ -1142,7 +1142,7 @@ sudo ufw allow from 100.64.0.0/10 to any port 19999
 
 ---
 
-## SUMMARY (Part 7)
+## SUMMARY 
 
 ### What You've Built
 
