@@ -1,4 +1,3 @@
-(OLD - refer to NASPi_Guide)
 # Pi 5 NAS Standalone Setup
 ## Secure Encrypted NAS + Jellyfin + RetroPie + Enterprise Security
 
