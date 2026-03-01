@@ -1617,28 +1617,252 @@ crontab -l
 
 ### Phase 8: Intrusion Detection (1.5 hours)
 
+Two complementary tools:
+- **AIDE** — file integrity monitoring: detects unauthorized changes to system files
+- **auditd** — kernel-level audit logging: records who did what, when
+
+---
+
+#### Step 1: AIDE — File Integrity Monitoring
+
+AIDE builds a cryptographic database of your system files and alerts you when anything changes.
+
 ```bash
-# Install AIDE
-sudo apt-get install aide aide-common
-
-# Initialize database (takes time)
-sudo aideinit
-
-# Schedule daily checks
-crontab -e
-0 2 * * * /usr/bin/aide --check | mail -s "AIDE Report" root
-
-# Install auditd
-sudo apt-get install auditd audispd-plugins
-
-# Configure audit rules
-sudo nano /etc/audit/rules.d/nas.rules
-# Add syscall monitoring rules
-
-# Enable
-sudo systemctl enable auditd
-sudo systemctl start auditd
+sudo apt install -y aide aide-common
 ```
+
+AIDE's default config (`/etc/aide/aide.conf`) already covers standard system paths. Add a drop-in rule to also monitor NAS-specific configuration:
+
+```bash
+sudo tee /etc/aide/aide.conf.d/99-nas.conf <<'EOF'
+# Monitor WireGuard config
+/etc/wireguard/wg0.conf CONTENT_EX
+
+# Monitor Nextcloud snap config
+/var/snap/nextcloud/current/nextcloud/config/config.php CONTENT_EX
+
+# Monitor nginx config
+/etc/nginx/sites-enabled/ CONTENT_EX
+
+# Exclude volatile data paths
+!/mnt/data
+!/var/lib/nextcloud
+EOF
+```
+
+Initialize the database. This scans your entire system and takes 5–10 minutes:
+
+```bash
+sudo aideinit
+```
+
+When complete, move the new database into place for future checks:
+
+```bash
+sudo mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db
+```
+
+Schedule a daily integrity check. The output is emailed via Postfix (configured in Phase 7):
+
+```bash
+crontab -e
+```
+
+Add this line:
+
+```
+# AIDE daily file integrity check (2:30 AM)
+30 2 * * * /usr/bin/aide --check 2>&1 | mail -s "[NASPi] AIDE Integrity Report $(date +\%F)" your@email.com
+```
+
+> **Note:** AIDE only emails when it finds changes. If you receive no email, the check ran clean. Run `sudo aide --check` manually to confirm.
+
+After any intentional system changes (package upgrades, config edits), update the database so AIDE stops flagging legitimate changes:
+
+```bash
+sudo aide --update
+sudo mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db
+```
+
+---
+
+#### Step 2: auditd — Kernel Audit Logging
+
+auditd records privileged actions at the kernel level — file access, auth events, privilege escalation, and configuration changes.
+
+```bash
+sudo apt install -y auditd audispd-plugins
+```
+
+Create audit rules targeting NAS-relevant events:
+
+```bash
+sudo tee /etc/audit/rules.d/nas.rules <<'EOF'
+# Delete all existing rules on load
+-D
+
+# Increase buffer for busy systems
+-b 8192
+
+# Failure mode: 1 = log to kernel (safe default)
+-f 1
+
+# --- Identity & authentication files ---
+-w /etc/passwd -p wa -k identity
+-w /etc/shadow -p wa -k identity
+-w /etc/group -p wa -k identity
+-w /etc/sudoers -p wa -k identity
+-w /etc/sudoers.d/ -p wa -k identity
+
+# --- SSH configuration ---
+-w /etc/ssh/sshd_config -p wa -k sshd_config
+
+# --- Cron jobs ---
+-w /etc/crontab -p wa -k cron
+-w /etc/cron.d/ -p wa -k cron
+-w /var/spool/cron/crontabs/ -p wa -k cron
+
+# --- LUKS / cryptsetup ---
+-w /etc/crypttab -p wa -k luks
+-a always,exit -F path=/usr/sbin/cryptsetup -F perm=x -k luks
+
+# --- WireGuard configuration ---
+-w /etc/wireguard/ -p wa -k wireguard
+
+# --- Privilege escalation ---
+-w /usr/bin/sudo -p x -k privilege_escalation
+-w /bin/su -p x -k privilege_escalation
+
+# --- Login events ---
+-w /var/log/faillog -p wa -k auth
+-w /var/log/lastlog -p wa -k auth
+-w /var/run/faillock/ -p wa -k auth
+EOF
+```
+
+Load the rules and enable auditd on boot:
+
+```bash
+sudo systemctl enable --now auditd
+sudo auditctl -R /etc/audit/rules.d/nas.rules
+```
+
+Verify rules are active:
+
+```bash
+sudo auditctl -l
+```
+
+---
+
+#### Reviewing Audit Logs
+
+Search logs by key to investigate specific events:
+
+```bash
+# See all identity-related changes
+sudo ausearch -k identity --interpret
+
+# See all privilege escalation (sudo/su use)
+sudo ausearch -k privilege_escalation --interpret
+
+# See all WireGuard config changes
+sudo ausearch -k wireguard --interpret
+
+# Summary of all authentication events
+sudo aureport --auth
+
+# Summary of all failed events
+sudo aureport --failed
+```
+
+Generate a weekly audit summary via cron:
+
+```bash
+crontab -e
+```
+
+Add:
+
+```
+# Weekly auditd summary report (Monday 3 AM)
+0 3 * * 1 sudo aureport --summary 2>&1 | mail -s "[NASPi] Weekly Audit Report $(date +\%F)" your@email.com
+```
+
+---
+
+#### Verify
+
+```bash
+# AIDE database exists
+ls -lh /var/lib/aide/aide.db
+
+# AIDE manual check runs without errors
+sudo aide --check
+
+# auditd is running
+sudo systemctl status auditd
+
+# Audit rules loaded
+sudo auditctl -l
+
+# Trigger a test event and confirm it's logged
+sudo touch /etc/sudoers.d/test-audit && sudo rm /etc/sudoers.d/test-audit
+sudo ausearch -k identity --interpret | tail -20
+```
+
+---
+
+#### Future Router Integration Note
+
+> **Planned:** The NASPi will eventually sit behind a dedicated Pi 5 privacy router running Snort3 or Suricata for network-level IDS/IPS.
+
+**How they work together:**
+
+AIDE and auditd are *host-based* intrusion detection (HIDS) — they monitor the NASPi's own files and system calls from the inside. Snort3/Suricata on the router is *network-based* intrusion detection (NIDS) — it inspects all traffic crossing the network boundary before it reaches any device. These two layers are complementary and do not conflict.
+
+```
+Internet
+    │
+[ Pi 5 Router ]  ← Snort3/Suricata: detects malicious traffic patterns,
+    │               port scans, exploit attempts, C2 beacons in-flight
+    │
+[ NASPi ]        ← AIDE + auditd: detects file tampering, config changes,
+                    privilege escalation, and local auth events
+```
+
+**What changes when the router is added:**
+
+| Component | Change needed |
+|---|---|
+| AIDE | None — continues monitoring system file integrity |
+| auditd rules | None — kernel audit logging is host-local |
+| auditd log forwarding | Optional: forward audit events to router's syslog for centralized review |
+| UFW rules | Consider tightening — router's IPS provides an additional perimeter layer |
+
+**Optional: forward NASPi audit logs to router syslog**
+
+When the router is running a syslog server (e.g., rsyslog), you can ship NASPi's audit events to it for centralized review:
+
+```bash
+# /etc/audit/auditd.conf — add remote logging
+sudo tee -a /etc/audit/auditd.conf <<'EOF'
+##
+# Remote syslog forwarding (enable when router syslog is configured)
+# name_format = HOSTNAME
+EOF
+
+# Or ship via rsyslog — add to /etc/rsyslog.d/99-nas.conf:
+# *.* @@192.168.1.1:514   # TCP to router syslog
+```
+
+**Snort3/Suricata placement considerations:**
+
+- Run in **inline IPS mode** on the router to actively block detected threats before they reach the NASPi
+- Add NASPi-specific rules: flag unexpected inbound connections to port 8920, 51820, or 2222 from unknown sources
+- Suricata can consume the Emerging Threats ruleset (`emerging-threats.rules`) for broad coverage with minimal configuration
+
+The NASPi's Phase 8 setup requires **no changes** when the router is deployed. The two detection layers strengthen each other automatically.
 
 ### Phase 9: Management Dashboard (15 min)
 
