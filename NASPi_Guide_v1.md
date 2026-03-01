@@ -781,70 +781,70 @@ getfacl /mnt/data/nextcloud/<admin-username>/files/Media
 
 ### Phase 3.5: Jellyfin Security Hardening (2-3 hours)
 
-**Why this phase exists:** Jellyfin ships with sensible defaults for a home network but needs deliberate hardening before any remote or VPN access. These steps lock down authentication, enable HTTPS via nginx, and set up logging and brute-force protection.
+**Why this phase exists:** Jellyfin ships with sensible defaults for a home network but needs deliberate hardening before any remote or VPN access. These steps lock down authentication, enable HTTPS via nginx, and set up brute-force protection and log monitoring.
 
 #### Security Issues Addressed
 
 | Issue | Severity | Solution |
 |-------|----------|----------|
-| Default admin user | 🔴 Critical | Delete default account, create named admin |
-| Weak password | 🔴 Critical | 20+ char password enforced |
+| Generic admin username | 🔴 Critical | Use a unique username — not "admin" or "administrator" |
+| Weak password | 🔴 Critical | 20+ character password required |
 | HTTP unencrypted | 🔴 Critical | HTTPS via nginx reverse proxy (port 8920) |
-| No rate limiting | 🟡 High | Fail2ban (5 attempts → 1hr ban) |
-| No 2FA | 🟡 High | oauth2-proxy (optional) |
-| No audit logging | 🟡 Medium | Jellyfin log monitoring enabled |
-| Sessions unmanaged | 🟡 Medium | Login attempt lockout configured |
+| No rate limiting | 🟡 High | Fail2ban (5 attempts → 1 hr ban) |
+| No audit logging | 🟡 Medium | Jellyfin log monitoring via grep and cron |
 | Clickjacking | 🟢 Low | X-Frame-Options header via nginx |
 | MIME sniffing | 🟢 Low | X-Content-Type-Options header via nginx |
 
-#### Step 1: Basic Hardening in the UI (30 min)
+---
 
-Do this immediately after the first boot of Jellyfin, before opening any ports.
+#### Step 1: Harden the Jellyfin UI (30 min)
 
-```
-# Access admin dashboard at:
-http://192.168.1.x:8096/web/index.html#!/dashboard
-```
-
-In the browser UI:
+Do this immediately after Phase 3 setup, before opening any external ports. Access the admin panel at:
 
 ```
-Dashboard → Users
-├─ Delete the default 'Administrator' account  ← CRITICAL, do this first
-└─ Create a new admin with a unique username + 20+ char password
+http://192.168.1.x:8096
+```
 
-Dashboard → Playback
-└─ Max concurrent streams: 3-5 (prevents resource exhaustion)
+In the browser:
 
-Dashboard → Networking
-├─ Allow remote connections to this server: ON  (required for VPN access later)
-├─ Enable automatic port mapping (UPnP): OFF
+```
+Administration → Users
+├─ Confirm your admin account uses a unique username (not "admin")
+├─ Set a 20+ character password if not already done
+└─ Verify no other accounts exist
+
+Administration → Playback
+└─ Maximum concurrent streams: 3–5  (prevents resource exhaustion)
+
+Administration → Networking
+├─ Allow remote connections: ON         (required for WireGuard VPN access)
+├─ Enable automatic port mapping: OFF   (disables UPnP — not needed)
 └─ External server registration: OFF
 
-Dashboard → Logs
-├─ Log level: Information
-└─ (Logs are retained at /var/log/jellyfin/ — 30 days by default)
+Administration → Dashboard → Logs
+└─ Log level: Information
+   (logs written to /var/log/jellyfin/ — retained 30 days by default)
 ```
+
+---
 
 #### Step 2: HTTPS via nginx Reverse Proxy (45 min)
 
-Jellyfin's built-in HTTPS requires a PKCS12 (.pfx) certificate, which is an extra conversion step. It is simpler to run nginx as a reverse proxy — nginx handles TLS with standard PEM certs and Jellyfin stays on HTTP internally (localhost only).
+Jellyfin's built-in HTTPS requires a PKCS12 (.pfx) certificate. It is simpler to use nginx as a reverse proxy — nginx handles TLS with standard PEM certs, and Jellyfin stays on HTTP internally (localhost:8096, never exposed directly).
+
+> **Port 80 note:** Nextcloud snap owns ports 80 and 443. The nginx Jellyfin config uses **port 8920 only** — no port 80 redirect is needed or configured.
 
 ```bash
-# Install nginx
-sudo apt-get install -y nginx
+sudo apt install -y nginx
 
-# Generate a self-signed cert for the NAS (reuse this cert for Nextcloud too)
-sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+# Self-signed cert for the NAS — 10-year validity suits a home server
+sudo openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
   -keyout /etc/ssl/private/nas-key.pem \
   -out /etc/ssl/certs/nas-cert.pem \
   -subj "/CN=naspi.local"
 
-# Create the nginx site config for Jellyfin
 sudo nano /etc/nginx/sites-available/jellyfin
 ```
-
-Paste the following nginx config (not a bash script):
 
 ```nginx
 upstream jellyfin_backend {
@@ -852,16 +852,9 @@ upstream jellyfin_backend {
     keepalive 10;
 }
 
-# Redirect HTTP → HTTPS
-server {
-    listen 80;
-    server_name naspi.local 192.168.1.x;
-    return 301 https://$host:8920$request_uri;
-}
-
 server {
     listen 8920 ssl http2;
-    server_name naspi.local 192.168.1.x;
+    server_name naspi.local 192.168.1.x;   # replace x with your static IP
 
     ssl_certificate     /etc/ssl/certs/nas-cert.pem;
     ssl_certificate_key /etc/ssl/private/nas-key.pem;
@@ -875,7 +868,7 @@ server {
     add_header X-XSS-Protection          "1; mode=block"    always;
     add_header Referrer-Policy           "strict-origin"    always;
 
-    # WebSocket support (required for Jellyfin)
+    # WebSocket support — required for Jellyfin real-time session updates
     location /socket {
         proxy_pass         http://jellyfin_backend;
         proxy_http_version 1.1;
@@ -886,48 +879,49 @@ server {
     }
 
     location / {
-        proxy_pass            http://jellyfin_backend;
-        proxy_http_version    1.1;
-        proxy_set_header      Connection         "";
-        proxy_set_header      Host               $host;
-        proxy_set_header      X-Real-IP          $remote_addr;
-        proxy_set_header      X-Forwarded-For    $proxy_add_x_forwarded_for;
-        proxy_set_header      X-Forwarded-Proto  https;
-        proxy_buffering       off;
+        proxy_pass           http://jellyfin_backend;
+        proxy_http_version   1.1;
+        proxy_set_header     Connection        "";
+        proxy_set_header     Host              $host;
+        proxy_set_header     X-Real-IP         $remote_addr;
+        proxy_set_header     X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header     X-Forwarded-Proto https;
+        proxy_buffering      off;
     }
 }
 ```
 
 ```bash
-# Enable site and test
+# Enable and start nginx
 sudo ln -s /etc/nginx/sites-available/jellyfin /etc/nginx/sites-enabled/
 sudo nginx -t
-sudo systemctl enable nginx
-sudo systemctl restart nginx
+sudo systemctl enable --now nginx
 
-# Block direct external access to Jellyfin's raw HTTP port
-# (nginx handles the public-facing traffic; 8096 stays localhost-only)
+# Block direct access to Jellyfin's internal port from the network
+# nginx handles all external traffic; 8096 stays localhost-only
 sudo ufw deny in on eth0 to any port 8096
 
-# Open the HTTPS port for LAN and VPN
-sudo ufw allow from 192.168.1.0/24 to any port 8920
-sudo ufw allow from 100.64.0.0/10  to any port 8920
-
-# Verify: open https://192.168.1.x:8920 in a browser
-# Accept the self-signed cert warning — this is expected
-sudo ufw status
+# Allow HTTPS access from LAN and WireGuard VPN
+sudo ufw allow from 192.168.1.0/24 to any port 8920/tcp
+sudo ufw allow from 100.64.0.0/24  to any port 8920/tcp
 ```
+
+> **Self-signed cert:** Browsers will show a certificate warning on first visit — this is expected. Accept the exception and bookmark `https://192.168.1.x:8920`. The connection is encrypted; the warning is only because the cert is self-signed rather than issued by a public CA.
+
+> **UFW note:** These rules are stored but the firewall is fully configured and enabled in Phase 6. Running them now is safe — `ufw deny/allow` is idempotent.
+
+---
 
 #### Step 3: Fail2ban for Brute-Force Protection (20 min)
 
 ```bash
-sudo apt-get install -y fail2ban
-
-# Create the Jellyfin jail
-sudo nano /etc/fail2ban/jail.d/jellyfin.conf
+sudo apt install -y fail2ban
 ```
 
-```ini
+Create the Jellyfin jail:
+
+```bash
+sudo tee /etc/fail2ban/jail.d/jellyfin.conf <<'EOF'
 [jellyfin]
 enabled  = true
 port     = 8920
@@ -936,25 +930,25 @@ logpath  = /var/log/jellyfin/log*.log
 maxretry = 5
 findtime = 600
 bantime  = 3600
+EOF
 ```
+
+Create the filter matching Jellyfin's auth failure log format:
 
 ```bash
-# Create the filter that matches Jellyfin's auth failure log format
-sudo nano /etc/fail2ban/filter.d/jellyfin.conf
-```
-
-```ini
+sudo tee /etc/fail2ban/filter.d/jellyfin.conf <<'EOF'
 [Definition]
 failregex = ^.*Authentication request for .* has been denied \(IP: "<HOST>"\).*$
 ignoreregex =
+EOF
 ```
 
 ```bash
-sudo systemctl restart fail2ban
-
-# Confirm the jail is running
+sudo systemctl enable --now fail2ban
 sudo fail2ban-client status jellyfin
 ```
+
+---
 
 #### Step 4: Log Monitoring (15 min)
 
@@ -965,22 +959,48 @@ ls /var/log/jellyfin/
 # Watch live for authentication events
 sudo tail -f /var/log/jellyfin/log*.log | grep -i "auth\|denied\|failed"
 
-# Spot-check for failed logins
-grep -i "denied\|failed" /var/log/jellyfin/log*.log | tail -50
+# Spot-check recent failed logins
+grep -i "denied\|failed" /var/log/jellyfin/log*.log | tail -20
+```
 
-# Schedule a nightly auth report (optional)
+Schedule a weekly auth failure summary (uses Postfix configured in Phase 7):
+
+```bash
 crontab -e
-# Add:  0 7 * * * grep -i "denied\|failed" /var/log/jellyfin/log*.log | mail -s "Jellyfin Auth Report" your@email.com
 ```
 
-**Verification checklist:**
+Add:
+
 ```
-☐ https://192.168.1.x:8920 loads Jellyfin
-☐ http://192.168.1.x:8096 is NOT reachable from another machine on the LAN
-☐ Default 'Administrator' account is deleted
-☐ sudo fail2ban-client status jellyfin → shows jail active
-☐ sudo nginx -t → no errors
-☐ Security headers visible in browser DevTools → Network → Response Headers
+# Weekly Jellyfin auth failure report (Monday 7 AM)
+0 7 * * 1 grep -i "denied\|failed" /var/log/jellyfin/log*.log | tail -20 | mail -s "[NASPi] Jellyfin Auth Report $(date +\%F)" your@gmail.com
+```
+
+---
+
+#### Verify
+
+```bash
+# nginx config valid
+sudo nginx -t
+
+# nginx running
+sudo systemctl status nginx
+
+# Port 8920 is listening
+sudo ss -tlnp | grep 8920
+
+# Jellyfin accessible via HTTPS (accept self-signed cert warning)
+curl -sk https://127.0.0.1:8920 | grep -i "jellyfin" | head -3
+
+# Port 8096 blocked externally — run this from another machine on the LAN:
+# curl http://192.168.1.x:8096   ← should time out or refuse
+
+# Fail2ban jail active
+sudo fail2ban-client status jellyfin
+
+# Security headers present
+curl -skI https://127.0.0.1:8920 | grep -E "Strict-Transport|X-Frame|X-Content"
 ```
 
 ### Phase 4: RetroArch + EmulationStation (1.5 hours)
