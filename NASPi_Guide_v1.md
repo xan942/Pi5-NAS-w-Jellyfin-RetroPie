@@ -1615,6 +1615,89 @@ sudo tail -5 /var/log/mail.log
 crontab -l
 ```
 
+---
+
+#### Future Router Integration Note
+
+> **Planned:** The NASPi will eventually sit behind a dedicated Pi 5 privacy router with its own monitoring and logging stack.
+
+**Two monitoring layers — not duplicates:**
+
+```
+[ Pi 5 Router ]  ← Network-level monitoring: traffic flows, DNS queries,
+    │               bandwidth per device, WAN health, inter-device comms
+    │
+[ NASPi ]        ← Host-level monitoring: disk, LUKS, CPU temp, services,
+                    Nextcloud status, auth failures, Fail2ban bans
+```
+
+The NASPi's health-check.sh and rsyslog setup report on things the router cannot see (LUKS unlock status, Nextcloud internals, Jellyfin service state). The router sees things the NASPi cannot (traffic leaving the network, DNS lookups, bandwidth by device). These layers complement rather than duplicate each other.
+
+**What changes when the router is added:**
+
+| Component | Change |
+|---|---|
+| rsyslog | Forward NASPi logs to router's centralized syslog server |
+| health-check.sh | Add router connectivity check; simplify network sections if router covers them |
+| Postfix relay | No change — Gmail relay continues working through the router |
+| UFW | Allow syslog forwarding port (514/tcp) inbound from router |
+| Metrics (optional) | Install `prometheus-node-exporter` so router's Prometheus can scrape NASPi |
+
+**1. Centralized log forwarding to router syslog**
+
+When the router is running rsyslog or syslog-ng as a central log server, add one line to the NASPi's drop-in config:
+
+```bash
+sudo tee -a /etc/rsyslog.d/99-nas.conf <<'EOF'
+
+# Forward all NASPi logs to router's central syslog (enable when router is ready)
+# Replace 192.168.1.1 with router's actual LAN IP
+# *.* @@192.168.1.1:514    # TCP (reliable)
+# *.* @192.168.1.1:514     # UDP (lower overhead)
+EOF
+```
+
+Allow the outbound port through UFW:
+
+```bash
+# Uncomment and run when router syslog server is configured
+# sudo ufw allow out to 192.168.1.1 port 514
+```
+
+**2. Metrics scraping with Prometheus node_exporter (optional)**
+
+If the router runs Prometheus + Grafana for a unified metrics dashboard, install node_exporter on the NASPi so the router can pull hardware metrics (CPU, disk I/O, memory, network) directly:
+
+```bash
+# Install when router's Prometheus is configured
+sudo apt install -y prometheus-node-exporter
+
+# Restrict node_exporter to LAN only (never expose to WAN)
+sudo ufw allow from 192.168.1.0/24 to any port 9100/tcp
+
+# Router's prometheus.yml scrape target:
+# - job_name: 'naspi'
+#   static_configs:
+#     - targets: ['192.168.1.x:9100']
+```
+
+With this in place, the router's Grafana dashboard can display NASPi disk usage, temperature, and service metrics alongside router-level traffic graphs — a single pane of glass for the whole setup.
+
+**3. Health check script evolution**
+
+Once the router is monitoring network-level health, add a router connectivity check to the NASPi script so it can flag if the router goes down:
+
+```bash
+# Add to health-check.sh report() function when router is deployed:
+echo "--- Router Connectivity ---"
+if ping -c 2 -W 2 192.168.1.1 &>/dev/null; then
+  echo "  Router: reachable"
+else
+  echo "  WARNING: Router unreachable"
+fi
+echo ""
+```
+
 ### Phase 8: Intrusion Detection (1.5 hours)
 
 Two complementary tools:
