@@ -30,7 +30,6 @@ RESULT:   ✅ LUKS encryption (AES-256)
           ✅ RetroArch + EmulationStation gaming (50+ systems)
           ✅ WireGuard VPN (NYC ↔ LA)
           ✅ Professional monitoring dashboards
-          ✅ Automated encrypted backups
           ✅ Intrusion detection (AIDE/auditd/Tripwire)
           ✅ Zero-trust firewall architecture
 ```
@@ -55,12 +54,10 @@ RESULT:   ✅ LUKS encryption (AES-256)
 
 1. [Architecture & Design](#architecture-and-design) - Understand the system
 2. [Technology Reasoning](#technology-reasoning) - Why each choice
-3. [Phases 1-9 Configuration](#phases-1-9-configuration) - Core NAS setup
-4. [Jellyfin Security](#jellyfin-security) - Web access hardening  
-5. [Management Dashboard](#management-dashboard) - Cockpit + Netdata
-6. [Troubleshooting](#troubleshooting) - Solutions for common issues
-7. [References](#references) - Commands, links, resources
-8. [Summary](#summary) - What you've built, next steps
+3. [Phases 1-9 Configuration](#phases-1-9-configuration) - Core NAS setup (incl. Phase 3.5 Jellyfin hardening)
+4. [Troubleshooting](#troubleshooting) - Solutions for common issues
+5. [References](#references) - Commands, links, resources
+6. [Summary](#summary) - What you've built, next steps
 
 ---
 
@@ -71,13 +68,14 @@ RESULT:   ✅ LUKS encryption (AES-256)
 ```
 Raspberry Pi 5 (8GB)
 ├─ PCIe Gen 3 x4 (true speed, not USB bottleneck)
-├─ Kingston P34A60 SSD (2TB)
-│  ├─ LUKS partition 1: nas_storage (1TB)
-│  │  ├─ Nextcloud data
-│  │  ├─ Jellyfin media  
-│  │  └─ RetroArch ROMs & EmulationStation configs
-│  └─ LUKS partition 2: nas_backups (1TB)
-│     └─ Daily encrypted backups
+├─ Kingston P34A60 SSD (238GB+)
+│  ├─ nvme0n1p1 (512M) - /boot/firmware  (vfat)
+│  ├─ nvme0n1p2  (50G) - /              (ext4, OS root)
+│  └─ nvme0n1p3  (remaining) - LUKS encrypted data
+│     └─ /dev/mapper/data → /mnt/data
+│        ├─ Nextcloud data (documents, photos)
+│        ├─ Jellyfin media (movies, TV, music)
+│        └─ RetroArch ROMs & EmulationStation configs
 ├─ Active cooling (fan + heatsink)
 ├─ Gigabit Ethernet (streaming)
 └─ 25W official PSU (vs 150W servers)
@@ -111,8 +109,7 @@ LAYER 4: Network & Encryption
 └─ Email alerts - Notifications
 
 LAYER 5: Encryption (At-Rest)
-├─ LUKS nas_storage - AES-256
-└─ LUKS nas_backups - AES-256
+└─ LUKS data volume (nvme0n1p3) - AES-256
 
 LAYER 6: OS
 └─ Ubuntu 24.04 LTS ARM64
@@ -149,9 +146,7 @@ LAYER 3: In-Transit Encryption
 └─ DNS over HTTPS (optional)
 
 LAYER 2: At-Rest Encryption
-├─ LUKS main volume (AES-256)
-├─ LUKS backup volume (AES-256)
-├─ Encrypted USB backups
+├─ LUKS data volume (AES-256)
 └─ Passphrase protection
 
 LAYER 1: Authentication & Access
@@ -191,12 +186,12 @@ LAYER 1: Authentication & Access
 - Industry standard (job market skill)
 - Official support for Pi 5 ARM64
 
-### Why LUKS (2 Volumes)?
+### Why LUKS (Single Volume)?
 
 - **Standard:** Works on any Linux system
 - **Portable:** Data not vendor-locked
-- **Separate keys:** One volume corrupt ≠ both lost
-- **Better backups:** Independent encryption layers
+- **Simple:** One passphrase, one partition to manage
+- **Efficient:** All available space goes to user data
 
 ### Why Nextcloud (not Samba)?
 
@@ -236,14 +231,14 @@ LAYER 1: Authentication & Access
 | Phase | Component | Time | Result |
 |-------|-----------|------|--------|
 | 1 | OS Installation | 2 hrs | Ubuntu 24.04 running |
-| 2 | LUKS Encryption | 2-3 hrs | 2TB encrypted storage |
-| 3 | Jellyfin | 2 hrs | 4K media streaming |
+| 2 | LUKS Encryption | 1-2 hrs | Single encrypted data volume |
+| 3 | Nextcloud + Jellyfin | 3 hrs | File sync + 4K media streaming |
 | 4 | RetroArch + EmulationStation | 1.5 hrs | Gaming emulation (50+ systems) |
 | 5 | WireGuard VPN | 1.5 hrs | Secure remote access |
 | 6 | Firewall & TLS | 2 hrs | Network protection |
 | 7 | Monitoring | 1.5 hrs | Health checks + alerts |
 | 8 | Intrusion Detect | 1.5 hrs | AIDE + auditd + Tripwire |
-| 9 | Encrypted Backups | 1.5 hrs | Daily automated backups |
+| 9 | Management Dashboard | 15 min | Cockpit + Netdata |
 
 **Complete step-by-step:** See Pi5_NAS_Standalone_Setup_Guide_ENHANCED.md
 
@@ -273,32 +268,43 @@ ssh ubuntu@192.168.1.x
 uname -r  # Should show kernel 6.8+
 ```
 
-### Phase 2: LUKS Encryption (2-3 hours)
+### Phase 2: LUKS Encryption (1-2 hours)
+
+The NVMe SSD uses 3 partitions: p1 (boot), p2 (OS root), p3 (LUKS encrypted data).
+Partition p3 is the one you encrypt — the other two are created automatically by the Ubuntu installer.
 
 ```bash
-# Create LUKS partitions (2 × 1TB)
-sudo cryptsetup luksFormat /dev/nvme0n1p1
-sudo cryptsetup luksFormat /dev/nvme0n1p2
+# If p3 doesn't exist yet, create it with fdisk or parted
+# (skip if it already exists from OS install)
+sudo fdisk /dev/nvme0n1
+# → n (new partition), accept defaults to use remaining space
+# → w (write)
 
-# Open volumes
-sudo cryptsetup luksOpen /dev/nvme0n1p1 nas_storage
-sudo cryptsetup luksOpen /dev/nvme0n1p2 nas_backups
+# Format p3 as LUKS (you will be prompted for a passphrase — store it safely)
+sudo cryptsetup luksFormat /dev/nvme0n1p3
 
-# Create filesystems
-sudo mkfs.ext4 /dev/mapper/nas_storage
-sudo mkfs.ext4 /dev/mapper/nas_backups
+# Open the encrypted volume
+sudo cryptsetup luksOpen /dev/nvme0n1p3 data
 
-# Create mount directories
-sudo mkdir -p /mnt/nas_storage /mnt/nas_backups
-sudo mount /dev/mapper/nas_storage /mnt/nas_storage
-sudo mount /dev/mapper/nas_backups /mnt/nas_backups
+# Create ext4 filesystem inside the LUKS container
+sudo mkfs.ext4 /dev/mapper/data
 
-# Configure auto-mount (crypttab + fstab)
-# See detailed guide for exact entries
+# Create mount point and mount
+sudo mkdir -p /mnt/data
+sudo mount /dev/mapper/data /mnt/data
+
+# Configure auto-unlock on boot via crypttab
+# Get the UUID of nvme0n1p3
+sudo blkid /dev/nvme0n1p3
+# Copy the UUID value, then:
+echo "data UUID=<your-uuid-here> none luks,discard" | sudo tee -a /etc/crypttab
+
+# Configure auto-mount via fstab
+echo "/dev/mapper/data /mnt/data ext4 defaults,nofail 0 2" | sudo tee -a /etc/fstab
 
 # Verify
-df -h | grep nas_storage
-df -h | grep nas_backups
+lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT
+df -h | grep /mnt/data
 ```
 
 ### Phase 3: Jellyfin (2 hours)
@@ -308,8 +314,8 @@ df -h | grep nas_backups
 sudo apt-get install jellyfin
 
 # Create storage structure
-sudo mkdir -p /mnt/nas_storage/jellyfin/{library,movies,tv,music}
-sudo chown -R jellyfin:jellyfin /mnt/nas_storage/jellyfin
+sudo mkdir -p /mnt/data/jellyfin/{library,movies,tv,music}
+sudo chown -R jellyfin:jellyfin /mnt/data/jellyfin
 
 # Enable and start
 sudo systemctl enable jellyfin
@@ -318,7 +324,211 @@ sudo systemctl start jellyfin
 # Access and configure
 # Visit http://192.168.1.x:8096
 # Add library locations pointing to encrypted storage
-# See Part 3 for Jellyfin security hardening
+# Continue to Phase 3.5 for security hardening
+```
+
+### Phase 3.5: Jellyfin Security Hardening (2-3 hours)
+
+**Why this phase exists:** Jellyfin ships with sensible defaults for a home network but needs deliberate hardening before any remote or VPN access. These steps lock down authentication, enable HTTPS via nginx, and set up logging and brute-force protection.
+
+#### Security Issues Addressed
+
+| Issue | Severity | Solution |
+|-------|----------|----------|
+| Default admin user | 🔴 Critical | Delete default account, create named admin |
+| Weak password | 🔴 Critical | 20+ char password enforced |
+| HTTP unencrypted | 🔴 Critical | HTTPS via nginx reverse proxy (port 8920) |
+| No rate limiting | 🟡 High | Fail2ban (5 attempts → 1hr ban) |
+| No 2FA | 🟡 High | oauth2-proxy (optional) |
+| No audit logging | 🟡 Medium | Jellyfin log monitoring enabled |
+| Sessions unmanaged | 🟡 Medium | Login attempt lockout configured |
+| Clickjacking | 🟢 Low | X-Frame-Options header via nginx |
+| MIME sniffing | 🟢 Low | X-Content-Type-Options header via nginx |
+
+#### Step 1: Basic Hardening in the UI (30 min)
+
+Do this immediately after the first boot of Jellyfin, before opening any ports.
+
+```
+# Access admin dashboard at:
+http://192.168.1.x:8096/web/index.html#!/dashboard
+```
+
+In the browser UI:
+
+```
+Dashboard → Users
+├─ Delete the default 'Administrator' account  ← CRITICAL, do this first
+└─ Create a new admin with a unique username + 20+ char password
+
+Dashboard → Playback
+└─ Max concurrent streams: 3-5 (prevents resource exhaustion)
+
+Dashboard → Networking
+├─ Allow remote connections to this server: ON  (required for VPN access later)
+├─ Enable automatic port mapping (UPnP): OFF
+└─ External server registration: OFF
+
+Dashboard → Logs
+├─ Log level: Information
+└─ (Logs are retained at /var/log/jellyfin/ — 30 days by default)
+```
+
+#### Step 2: HTTPS via nginx Reverse Proxy (45 min)
+
+Jellyfin's built-in HTTPS requires a PKCS12 (.pfx) certificate, which is an extra conversion step. It is simpler to run nginx as a reverse proxy — nginx handles TLS with standard PEM certs and Jellyfin stays on HTTP internally (localhost only).
+
+```bash
+# Install nginx
+sudo apt-get install -y nginx
+
+# Generate a self-signed cert for the NAS (reuse this cert for Nextcloud too)
+sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+  -keyout /etc/ssl/private/nas-key.pem \
+  -out /etc/ssl/certs/nas-cert.pem \
+  -subj "/CN=naspi.local"
+
+# Create the nginx site config for Jellyfin
+sudo nano /etc/nginx/sites-available/jellyfin
+```
+
+Paste the following nginx config (not a bash script):
+
+```nginx
+upstream jellyfin_backend {
+    server 127.0.0.1:8096;
+    keepalive 10;
+}
+
+# Redirect HTTP → HTTPS
+server {
+    listen 80;
+    server_name naspi.local 192.168.1.x;
+    return 301 https://$host:8920$request_uri;
+}
+
+server {
+    listen 8920 ssl http2;
+    server_name naspi.local 192.168.1.x;
+
+    ssl_certificate     /etc/ssl/certs/nas-cert.pem;
+    ssl_certificate_key /etc/ssl/private/nas-key.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+
+    # Security headers
+    add_header Strict-Transport-Security "max-age=31536000" always;
+    add_header X-Content-Type-Options    "nosniff"          always;
+    add_header X-Frame-Options           "SAMEORIGIN"       always;
+    add_header X-XSS-Protection          "1; mode=block"    always;
+    add_header Referrer-Policy           "strict-origin"    always;
+
+    # WebSocket support (required for Jellyfin)
+    location /socket {
+        proxy_pass         http://jellyfin_backend;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade    $http_upgrade;
+        proxy_set_header   Connection "upgrade";
+        proxy_set_header   Host       $host;
+        proxy_set_header   X-Real-IP  $remote_addr;
+    }
+
+    location / {
+        proxy_pass            http://jellyfin_backend;
+        proxy_http_version    1.1;
+        proxy_set_header      Connection         "";
+        proxy_set_header      Host               $host;
+        proxy_set_header      X-Real-IP          $remote_addr;
+        proxy_set_header      X-Forwarded-For    $proxy_add_x_forwarded_for;
+        proxy_set_header      X-Forwarded-Proto  https;
+        proxy_buffering       off;
+    }
+}
+```
+
+```bash
+# Enable site and test
+sudo ln -s /etc/nginx/sites-available/jellyfin /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl enable nginx
+sudo systemctl restart nginx
+
+# Block direct external access to Jellyfin's raw HTTP port
+# (nginx handles the public-facing traffic; 8096 stays localhost-only)
+sudo ufw deny in on eth0 to any port 8096
+
+# Open the HTTPS port for LAN and VPN
+sudo ufw allow from 192.168.1.0/24 to any port 8920
+sudo ufw allow from 100.64.0.0/10  to any port 8920
+
+# Verify: open https://192.168.1.x:8920 in a browser
+# Accept the self-signed cert warning — this is expected
+sudo ufw status
+```
+
+#### Step 3: Fail2ban for Brute-Force Protection (20 min)
+
+```bash
+sudo apt-get install -y fail2ban
+
+# Create the Jellyfin jail
+sudo nano /etc/fail2ban/jail.d/jellyfin.conf
+```
+
+```ini
+[jellyfin]
+enabled  = true
+port     = 8920
+filter   = jellyfin
+logpath  = /var/log/jellyfin/log*.log
+maxretry = 5
+findtime = 600
+bantime  = 3600
+```
+
+```bash
+# Create the filter that matches Jellyfin's auth failure log format
+sudo nano /etc/fail2ban/filter.d/jellyfin.conf
+```
+
+```ini
+[Definition]
+failregex = ^.*Authentication request for .* has been denied \(IP: "<HOST>"\).*$
+ignoreregex =
+```
+
+```bash
+sudo systemctl restart fail2ban
+
+# Confirm the jail is running
+sudo fail2ban-client status jellyfin
+```
+
+#### Step 4: Log Monitoring (15 min)
+
+```bash
+# Jellyfin log directory
+ls /var/log/jellyfin/
+
+# Watch live for authentication events
+sudo tail -f /var/log/jellyfin/log*.log | grep -i "auth\|denied\|failed"
+
+# Spot-check for failed logins
+grep -i "denied\|failed" /var/log/jellyfin/log*.log | tail -50
+
+# Schedule a nightly auth report (optional)
+crontab -e
+# Add:  0 7 * * * grep -i "denied\|failed" /var/log/jellyfin/log*.log | mail -s "Jellyfin Auth Report" your@email.com
+```
+
+**Verification checklist:**
+```
+☐ https://192.168.1.x:8920 loads Jellyfin
+☐ http://192.168.1.x:8096 is NOT reachable from another machine on the LAN
+☐ Default 'Administrator' account is deleted
+☐ sudo fail2ban-client status jellyfin → shows jail active
+☐ sudo nginx -t → no errors
+☐ Security headers visible in browser DevTools → Network → Response Headers
 ```
 
 ### Phase 4: RetroArch + EmulationStation (1.5 hours)
@@ -332,8 +542,8 @@ sudo systemctl start jellyfin
 
 ```bash
 # Create gaming directory structure on encrypted NVMe
-mkdir -p /mnt/nas_storage/retroarch/{roms,saves,configs,bios}
-mkdir -p /mnt/nas_storage/emulationstation
+mkdir -p /mnt/data/retroarch/{roms,saves,configs,bios}
+mkdir -p /mnt/data/emulationstation
 
 # Install RetroArch and dependencies
 sudo apt-get install -y retroarch retroarch-assets
@@ -346,17 +556,17 @@ sudo apt-get install -y emulationstation
 nano ~/.config/retroarch/retroarch.cfg
 
 # Set these paths:
-# savefile_directory = /mnt/nas_storage/retroarch/saves
-# savestate_directory = /mnt/nas_storage/retroarch/saves
-# system_directory = /mnt/nas_storage/retroarch/bios
+# savefile_directory = /mnt/data/retroarch/saves
+# savestate_directory = /mnt/data/retroarch/saves
+# system_directory = /mnt/data/retroarch/bios
 
 # Create symbolic link for ROMs
-ln -s /mnt/nas_storage/retroarch/roms ~/.config/emulationstation/roms
+ln -s /mnt/data/retroarch/roms ~/.config/emulationstation/roms
 
 # Configure EmulationStation
 emulationstation --help
 
-# Add ROM files to /mnt/nas_storage/retroarch/roms/[system]/
+# Add ROM files to /mnt/data/retroarch/roms/[system]/
 # Supported systems: nes, snes, genesis, n64, psx, etc.
 
 # Start EmulationStation
@@ -382,7 +592,7 @@ sudo systemctl enable emulationstation
 
 **Storage Structure:**
 ```
-/mnt/nas_storage/retroarch/
+/mnt/data/retroarch/
 ├─ roms/               (Game ROM files)
 │  ├─ nes/
 │  ├─ snes/
@@ -413,7 +623,7 @@ retroarch --version
 emulationstation --version
 
 # Verify storage paths are correct
-ls -la /mnt/nas_storage/retroarch/
+ls -la /mnt/data/retroarch/
 ```
 
 ### Phase 5: WireGuard VPN (1.5 hours)
@@ -521,187 +731,12 @@ sudo systemctl enable auditd
 sudo systemctl start auditd
 ```
 
-### Phase 9: Encrypted Backups (1.5 hours)
+### Phase 9: Management Dashboard (15 min)
+
+#### Quick Install
 
 ```bash
-# Create backup script
-nano ~/backup-with-checksum.sh
-
-#!/bin/bash
-BACKUP_DIR="/mnt/nas_backups"
-BACKUP_FILE="$BACKUP_DIR/full_backup_$(date +%Y%m%d_%H%M%S).tar.gz"
-
-tar -czf "$BACKUP_FILE" /mnt/nas_storage/
-sha256sum "$BACKUP_FILE" > "$BACKUP_FILE.sha256"
-md5sum "$BACKUP_FILE" > "$BACKUP_FILE.md5"
-sha256sum -c "$BACKUP_FILE.sha256"
-
-# Schedule daily at 4 AM
-chmod +x ~/backup-with-checksum.sh
-crontab -e
-0 4 * * * ~/backup-with-checksum.sh
-
-# Test backup restoration monthly
-# Extract sample files to verify integrity
-```
-
----
-
-## Jellyfin Security
-
-### 10 Security Issues Identified & Fixed
-
-| Issue | Severity | Solution |
-|-------|----------|----------|
-| Default admin user | 🔴 Critical | Delete default account |
-| Weak password | 🔴 Critical | Enforce 20+ chars |
-| HTTP unencrypted | 🔴 Critical | Force HTTPS (port 8920) |
-| No rate limiting | 🟡 High | Fail2ban (5 attempts → 1hr ban) |
-| No 2FA | 🟡 High | oauth2-proxy (optional) |
-| API keys unmanaged | 🟡 High | Rotation script (monthly) |
-| No logging | 🟡 Medium | Audit logging enabled |
-| Sessions immortal | 🟡 Medium | 30-min timeout |
-| Clickjacking | 🟢 Low | X-Frame-Options header |
-| MIME sniffing | 🟢 Low | X-Content-Type-Options |
-
-### Jellyfin Phase 1: Basic Hardening (30 min)
-
-```bash
-# Access Jellyfin admin panel
-# http://192.168.1.x:8096/Admin/Users
-
-# Delete default 'Administrator' user (CRITICAL)
-# Don't use default account ever
-
-# Create strong admin password (20+ chars, mixed case, numbers, symbols)
-
-# Configure settings:
-# Settings → Playback
-├─ Session timeout: 30 minutes
-└─ Max concurrent streams: 3-5 per user
-
-# Settings → Library
-└─ Enable metadata fetching, set refresh schedule
-
-# Enable security logging:
-# Settings → Logging
-├─ Log level: Debug
-└─ Keep 90 days
-
-# Disable unnecessary features:
-# Settings → Networking
-├─ UPnP: OFF
-├─ DLNA: OFF
-└─ External server registration: OFF
-```
-
-### Jellyfin Phase 2: SSL/TLS (20 min)
-
-```bash
-# Generate self-signed certificate
-sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-  -keyout /etc/jellyfin/ssl-key.pem \
-  -out /etc/jellyfin/ssl-cert.pem
-
-# Set permissions
-sudo chmod 644 /etc/jellyfin/ssl-*
-sudo chown jellyfin:jellyfin /etc/jellyfin/ssl-*
-
-# Configure Jellyfin for HTTPS
-sudo nano /etc/jellyfin/network.xml
-
-<Certificate>
-  <Thumbprint>cert-thumbprint</Thumbprint>
-</Certificate>
-<HttpsPort>8920</HttpsPort>
-
-# Restart Jellyfin
-sudo systemctl restart jellyfin
-
-# Configure firewall
-sudo ufw allow from 192.168.1.0/24 to any port 8920
-sudo ufw allow from 100.64.0.0/10 to any port 8920
-
-# Force HTTP → HTTPS redirect
-# Jellyfin dashboard → Settings → Network
-```
-
-### Jellyfin Phase 3: Reverse Proxy & 2FA (Optional, 1-2 hrs)
-
-```bash
-# Install nginx
-sudo apt-get install nginx
-
-# Create /etc/nginx/sites-available/jellyfin
-
-upstream jellyfin {
-    server 127.0.0.1:8096;
-}
-
-server {
-    listen 443 ssl http2;
-    server_name pi.local;
-    
-    ssl_certificate /etc/ssl/certs/nas-cert.pem;
-    ssl_certificate_key /etc/ssl/private/nas-key.pem;
-    
-    # Security headers
-    add_header Strict-Transport-Security "max-age=31536000" always;
-    add_header X-Content-Type-Options "nosniff" always;
-    add_header X-Frame-Options "SAMEORIGIN" always;
-    add_header X-XSS-Protection "1; mode=block" always;
-    add_header Referrer-Policy "no-referrer-when-downgrade" always;
-    add_header Permissions-Policy "geolocation=()" always;
-    
-    location / {
-        proxy_pass http://jellyfin;
-        proxy_http_version 1.1;
-        proxy_set_header Connection "";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
-}
-
-# Enable site
-sudo ln -s /etc/nginx/sites-available/jellyfin /etc/nginx/sites-enabled/
-sudo nginx -t
-sudo systemctl restart nginx
-
-# Optional: Add oauth2-proxy for 2FA
-# (See detailed Jellyfin guide for setup)
-```
-
-### Jellyfin Phase 4: Monitoring & Auditing (1-2 hrs)
-
-```bash
-# Create audit logging script
-nano ~/jellyfin-audit.sh
-
-#!/bin/bash
-# Check Jellyfin logs for suspicious activity
-grep "Failed authentication" /var/log/jellyfin/*.log | tail -100
-grep "Permission denied" /var/log/jellyfin/*.log | tail -50
-
-# Setup email alerts on failed logins
-crontab -e
-*/30 * * * * ~/jellyfin-security-alert.sh
-
-# Rotate API keys monthly
-crontab -e
-0 0 1 * * ~/api-key-rotation.sh
-
-# Monitor access patterns
-tail -f /var/log/jellyfin/log_*.txt | grep -i auth
-```
-
----
-
-## Management Dashboard
-
-### Quick 15-Minute Install
-
-```bash
-# Install both dashboards (one command)
+# Install both dashboards
 sudo apt-get install -y cockpit cockpit-storaged netdata
 
 # Enable on boot
@@ -717,11 +752,9 @@ sudo ufw allow from 192.168.1.0/24 to any port 19999
 # Access in browser
 # Cockpit:  https://pi.local:9090  (admin interface)
 # Netdata:  http://pi.local:19999  (real-time graphs)
-
-# Done! Total time: 15 minutes
 ```
 
-### Cockpit (HTTPS Port 9090)
+#### Cockpit (HTTPS Port 9090)
 
 ```
 What you get:
@@ -744,7 +777,7 @@ Key Features:
 └─ Networking → Interfaces: Network status
 ```
 
-### Netdata (HTTP Port 19999)
+#### Netdata (HTTP Port 19999)
 
 ```
 What you get:
@@ -767,31 +800,31 @@ Key Sections:
 └─ Processes: Top resource users
 ```
 
-### Email Alerts Configuration
+#### Email Alerts Configuration
 
 ```bash
-# Configure Netdata email
+# Configure Netdata email alerts
 sudo nano /etc/netdata/health_alarm_notify.conf
 
 SEND_EMAIL="YES"
 EMAIL_SENDER="netdata@pi.local"
 RECIPIENTS_EMAIL="your-email@example.com"
 
-# For Gmail (use app-specific password, not Gmail password)
+# For Gmail (use an app-specific password, not your Gmail password)
 SMTP_SERVER="smtp.gmail.com"
 SMTP_PORT="587"
 SMTP_AUTH="YES"
 SMTP_USER="your-email@gmail.com"
 SMTP_PASS="your-app-specific-password"
 
-# Test email
+# Test
 sudo /usr/libexec/netdata/plugins.d/alarm-notify.sh test
 
 # Restart Netdata
 sudo systemctl restart netdata
 ```
 
-### Daily Monitoring Routine
+#### Daily Monitoring Routine
 
 ```
 Morning Check (2 minutes):
@@ -909,36 +942,31 @@ sudo chown -R jellyfin:jellyfin /var/lib/jellyfin
 
 ```bash
 # Check status
-sudo cryptsetup status nas_storage
-sudo cryptsetup status nas_backups
+sudo cryptsetup status data
 
 # Try manual unlock
-sudo cryptsetup luksOpen /dev/nvme0n1p1 nas_storage
+sudo cryptsetup luksOpen /dev/nvme0n1p3 data
 
 # Manual mount
-sudo mount /dev/mapper/nas_storage /mnt/nas_storage
+sudo mount /dev/mapper/data /mnt/data
 
 # Check disk errors
-sudo fsck -n /dev/mapper/nas_storage
+sudo fsck -n /dev/mapper/data
 ```
 
 #### Disk Space Issues
 
 ```bash
 # Check usage by directory
-du -sh /mnt/nas_storage/*
-du -sh /mnt/nas_backups/*
+du -sh /mnt/data/*
 
 # Find large files
-find /mnt/nas_storage -size +1G -type f
-
-# Clean old backups
-ls -lh /mnt/nas_backups/full_backup_*.tar.gz
-# Delete backups older than 90 days
+find /mnt/data -size +1G -type f
 
 # Check Jellyfin/Nextcloud data
-du -sh /mnt/nas_storage/jellyfin/
-du -sh /mnt/nas_storage/nextcloud/
+du -sh /mnt/data/nextcloud/
+du -sh /mnt/data/jellyfin/
+du -sh /mnt/data/retroarch/
 ```
 
 ### Network & Remote Access Issues
@@ -1087,8 +1115,8 @@ sudo wg show
 sudo systemctl restart wg-quick@wg0
 
 # LUKS
-sudo cryptsetup status nas_storage
-sudo mount /dev/mapper/nas_storage /mnt/nas_storage
+sudo cryptsetup status data
+sudo mount /dev/mapper/data /mnt/data
 
 # Monitoring
 top
@@ -1190,10 +1218,9 @@ sudo ufw allow from 100.64.0.0/10 to any port 19999
    └─ Service health tracking
 
 ✅ AUTOMATED RELIABILITY
-   ├─ Daily encrypted backups
-   ├─ Checksum verification
-   ├─ Monthly recovery testing
-   └─ Disaster recovery plan
+   ├─ AIDE daily integrity checks
+   ├─ Netdata + Cockpit health monitoring
+   └─ Email alerts on anomalies
 ```
 
 ### Key Achievements
@@ -1205,20 +1232,18 @@ sudo ufw allow from 100.64.0.0/10 to any port 19999
 | **Learning** | Professional DevOps platform |
 | **Privacy** | Complete data control |
 | **Performance** | 2.5 TB/s SSD, 400 MB/s VPN |
-| **Uptime** | 24/7 with automated backups |
+| **Uptime** | 24/7 self-hosted services |
 | **Operations** | 3-5 min daily, 30 min monthly |
 
 ### Timeline Summary
 
 ```
-Week 1-2:  Foundation (OS + Encryption)                2.5-3 hrs
-Week 2-3:  Services (Jellyfin + RetroArch/EmulationStation)  3.5 hrs
-Week 3-4:  Remote Access (VPN + Firewall)              3.5 hrs
-Week 4-5:  Advanced Security (Monitoring)              4.5 hrs
-Week 5:    File Sync (Nextcloud)                      1-2 hrs
-Week 5:    Management (Cockpit + Netdata)             0.25 hrs
-────────────────────────────────────────────────────────
-TOTAL:     6-7 weeks                          17-22 hrs
+Week 1-2:  Foundation (OS + Encryption)                        2.5-3 hrs
+Week 2-3:  Services (Nextcloud + Jellyfin + RetroArch/ES)      4.5 hrs
+Week 3-4:  Remote Access (VPN + Firewall)                      3.5 hrs
+Week 4-5:  Advanced Security (Monitoring + IDS + Cockpit/Netdata)  4.75 hrs
+────────────────────────────────────────────────────────────────
+TOTAL:     5-6 weeks                                   15-19 hrs
 ```
 
 ### Your Next Steps
@@ -1252,11 +1277,9 @@ TOTAL:     6-7 weeks                          17-22 hrs
 
 #### Long Term (Weeks 4-5)
 ```
-1. Complete Phases 7-9
-2. Install Nextcloud
-3. Test file sync
-4. Add Cockpit + Netdata
-5. Enjoy professional NAS!
+1. Complete Phases 7-8
+2. Add Cockpit + Netdata
+3. Enjoy professional NAS!
 ```
 
 ---
@@ -1322,7 +1345,6 @@ Hardware:
 ☐ 25W official PSU
 ☐ Gigabit Ethernet cable
 ☐ microSD card (64GB)
-☐ External USB drive (backups)
 
 Software:
 ☐ Ubuntu 24.04 ARM64 ISO
