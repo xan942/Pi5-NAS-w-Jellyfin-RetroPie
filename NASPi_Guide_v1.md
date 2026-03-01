@@ -1930,116 +1930,187 @@ EOF
 
 The NASPi's Phase 8 setup requires **no changes** when the router is deployed. The two detection layers strengthen each other automatically.
 
-### Phase 9: Management Dashboard (15 min)
+### Phase 9: Management Dashboard (30 min)
 
-#### Quick Install
+Two complementary tools:
+- **Cockpit** — browser-based admin panel: manage services, storage, users, and run shell commands without needing an SSH client
+- **Netdata** — real-time monitoring: per-second graphs of CPU, memory, disk I/O, and network
 
-```bash
-# Install both dashboards
-sudo apt-get install -y cockpit cockpit-storaged netdata
+---
 
-# Enable on boot
-sudo systemctl enable cockpit.socket netdata
-
-# Start services
-sudo systemctl start cockpit.socket netdata
-
-# Configure firewall
-sudo ufw allow from 192.168.1.0/24 to any port 9090
-sudo ufw allow from 192.168.1.0/24 to any port 19999
-
-# Access in browser
-# Cockpit:  https://pi.local:9090  (admin interface)
-# Netdata:  http://pi.local:19999  (real-time graphs)
-```
-
-#### Cockpit (HTTPS Port 9090)
-
-```
-What you get:
-├─ System overview (CPU, RAM, disk usage)
-├─ Storage management (LUKS, partitions, SMART)
-├─ Service start/stop/restart
-├─ Firewall GUI (UFW configuration)
-├─ User account management
-├─ Terminal access in browser
-└─ System logs
-
-Access: https://pi.local:9090
-Login: Your Pi username + password
-
-Key Features:
-├─ System → Overview: Hardware metrics
-├─ System → Storage: SSD info + LUKS status
-├─ System → Services: All systemd services
-├─ Networking → Firewall: UFW rules
-└─ Networking → Interfaces: Network status
-```
-
-#### Netdata (HTTP Port 19999)
-
-```
-What you get:
-├─ Real-time graphs (1-second updates)
-├─ 7-day historical data
-├─ CPU, RAM, disk, network monitoring
-├─ Process monitoring (top CPU/memory users)
-├─ Service health tracking
-├─ Email alerts on problems
-└─ Custom dashboards
-
-Access: http://pi.local:19999
-No login required (firewall protected)
-
-Key Sections:
-├─ Overview: All metrics at glance
-├─ System: CPU, memory, load
-├─ Disk: Storage usage, I/O
-├─ Network: Ethernet traffic
-└─ Processes: Top resource users
-```
-
-#### Email Alerts Configuration
+#### Step 1: Cockpit
 
 ```bash
-# Configure Netdata email alerts
+sudo apt install -y cockpit cockpit-storaged
+sudo systemctl enable --now cockpit.socket
+sudo ufw allow from 192.168.1.0/24 to any port 9090/tcp
+```
+
+Access at `https://192.168.1.x:9090`. Your browser will warn about a self-signed certificate — accept it. Log in with your Ubuntu username and password.
+
+**What Cockpit gives you:**
+
+```
+├─ System → Overview     CPU, RAM, disk usage, uptime, load average
+├─ System → Storage      NVMe partitions, LUKS volume status, SMART data
+├─ System → Services     Start/stop/restart any systemd service
+├─ System → Logs         Journald log viewer with filter and search
+├─ System → Accounts     User management, SSH key management
+└─ Terminal              Full shell in browser — no SSH client needed
+```
+
+> **Note:** Cockpit's built-in firewall UI works with firewalld, not UFW. Manage UFW rules via the Terminal tab or SSH as normal.
+
+---
+
+#### Step 2: Netdata
+
+```bash
+sudo apt install -y netdata
+sudo systemctl enable --now netdata
+sudo ufw allow from 192.168.1.0/24 to any port 19999/tcp
+```
+
+Access at `http://192.168.1.x:19999` — no login required (LAN-only, firewall protected).
+
+**Configure email alerts via Postfix:**
+
+Netdata uses the system's sendmail interface. Since Postfix is already configured as a Gmail relay (Phase 7), only two settings need enabling:
+
+```bash
 sudo nano /etc/netdata/health_alarm_notify.conf
+```
 
+Find and set these two lines:
+
+```
 SEND_EMAIL="YES"
-EMAIL_SENDER="netdata@pi.local"
-RECIPIENTS_EMAIL="your-email@example.com"
+DEFAULT_RECIPIENT_EMAIL="your@gmail.com"
+```
 
-# For Gmail (use an app-specific password, not your Gmail password)
-SMTP_SERVER="smtp.gmail.com"
-SMTP_PORT="587"
-SMTP_AUTH="YES"
-SMTP_USER="your-email@gmail.com"
-SMTP_PASS="your-app-specific-password"
+```bash
+# Test — should trigger a test email via Postfix
+sudo -u netdata /usr/libexec/netdata/plugins.d/alarm-notify.sh test
 
-# Test
-sudo /usr/libexec/netdata/plugins.d/alarm-notify.sh test
-
-# Restart Netdata
 sudo systemctl restart netdata
 ```
+
+**What Netdata gives you:**
+
+```
+├─ Overview     All metrics at a glance, 1-second resolution
+├─ System       CPU, memory, load average
+├─ Disk         Storage usage, I/O throughput per partition
+├─ Network      Ethernet traffic (bytes in/out)
+├─ Processes    Top CPU and memory consumers by process
+└─ Alerts       Built-in thresholds (disk >85%, sustained CPU, etc.)
+```
+
+Local data retention defaults to 1–7 days. For longer-term trends see the Future Router section below.
+
+---
 
 #### Daily Monitoring Routine
 
 ```
-Morning Check (2 minutes):
-1. Open Cockpit → System → Overview
-   ├─ CPU usage normal? (should be <20% idle)
-   ├─ Memory available? (should have >4GB free)
-   └─ Disk space? (target <80% full)
+Morning (2 minutes):
 
-2. Check Netdata alerts
-   ├─ Any red alerts?
-   ├─ Disk filling rapidly?
-   └─ Network issues?
+1. Check email inbox
+   ├─ Daily health report from health-check.sh (6 AM — Phase 7)
+   ├─ AIDE integrity report if changes detected (Phase 8)
+   └─ Any Netdata threshold alerts
 
-3. If green: You're good for the day!
-   If problems: Investigate in Cockpit/Netdata
+2. Open Netdata (http://192.168.1.x:19999)
+   ├─ Disk usage trending upward?
+   ├─ CPU or memory spikes overnight?
+   └─ Network anomalies?
+
+3. If something needs attention → open Cockpit (https://192.168.1.x:9090)
+   ├─ Restart a service    → System → Services
+   ├─ Investigate logs     → System → Logs
+   └─ Quick config change  → Terminal tab
+
+If everything is green: you're done.
 ```
+
+---
+
+#### Verify
+
+```bash
+# Cockpit running
+sudo systemctl status cockpit.socket
+
+# Cockpit responds
+curl -sk https://127.0.0.1:9090 | grep -i "cockpit" | head -2
+
+# Netdata running
+sudo systemctl status netdata
+
+# Netdata API responds
+curl -s http://127.0.0.1:19999/api/v1/info | grep -o '"version":"[^"]*"'
+
+# Firewall allows both from LAN
+sudo ufw status | grep -E "9090|19999"
+```
+
+---
+
+#### Future Router Integration Note
+
+> **Planned:** The Pi 5 privacy router will run Grafana as a centralised monitoring dashboard, pulling metrics from both the router and the NASPi.
+
+**Three-tool monitoring stack — each serves a different purpose:**
+
+```
+Cockpit   (NASPi, port 9090)   → Admin tasks: manage services, storage, users
+Netdata   (NASPi, port 19999)  → Real-time view: live graphs, 1-second resolution
+Grafana   (Router)             → Strategic view: long-term trends, cross-device
+                                  comparisons, custom dashboards and alerting
+```
+
+These are not redundant. Cockpit answers "I need to restart Jellyfin". Netdata answers "What's happening on the NASPi right now?". Grafana answers "How has disk fill rate trended over the past month?" and "How does NASPi CPU compare to router CPU?".
+
+**Connecting NASPi to Grafana via Prometheus:**
+
+The router's Grafana stack uses Prometheus as its data source. Install `prometheus-node-exporter` on the NASPi to expose hardware metrics for scraping (also noted in Phase 7):
+
+```bash
+# Install when router's Prometheus is configured
+sudo apt install -y prometheus-node-exporter
+
+# Restrict to LAN only — never expose to WAN
+sudo ufw allow from 192.168.1.0/24 to any port 9100/tcp
+```
+
+Add the NASPi as a scrape target in the router's `prometheus.yml`:
+
+```yaml
+scrape_configs:
+  - job_name: 'naspi'
+    static_configs:
+      - targets: ['192.168.1.x:9100']
+        labels:
+          instance: 'naspi'
+```
+
+Grafana then displays NASPi CPU, memory, disk I/O, and network alongside router metrics in a single unified dashboard.
+
+**What changes when Grafana is deployed:**
+
+| Component | Change |
+|---|---|
+| Cockpit | None — remains as the NASPi's local admin panel |
+| Netdata | None — remains for real-time local monitoring |
+| node_exporter | Add to NASPi — exposes metrics for Prometheus scraping |
+| UFW | Add port 9100/tcp allow from router's LAN IP |
+| Data retention | Grafana/Prometheus handle long-term storage; Netdata default retention unchanged |
+
+**Recommended Grafana dashboards for NASPi:**
+
+- **Node Exporter Full** (dashboard ID `1860`) — comprehensive system metrics with zero custom config
+- Disk usage panel targeting `/mnt/data` — project when storage needs expanding
+- Service uptime panel — Jellyfin, Nextcloud, WireGuard, Fail2ban status over time
 
 ---
 
