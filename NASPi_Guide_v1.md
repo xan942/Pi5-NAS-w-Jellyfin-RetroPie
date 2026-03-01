@@ -54,7 +54,17 @@ RESULT:   ✅ LUKS encryption (AES-256)
 
 1. [Architecture & Design](#architecture-and-design) - Understand the system
 2. [Technology Reasoning](#technology-reasoning) - Why each choice
-3. [Phases 1-9 Configuration](#phases-1-9-configuration) - Core NAS setup (incl. Phase 3.5 Jellyfin hardening)
+3. [Phases 1-9 Configuration](#phases-1-9-configuration) - Core NAS setup
+   - [Phase 1: Ubuntu Installation](#phase-1-ubuntu-installation-2-hours)
+   - [Phase 2: NVMe Partitioning & LUKS Encryption](#phase-2-nvme-partitioning--luks-encryption-1-2-hours)
+   - [Phase 3: Jellyfin](#phase-3-jellyfin-2-hours)
+   - [Phase 3.5: Jellyfin Security Hardening](#phase-35-jellyfin-security-hardening-2-3-hours)
+   - [Phase 4: RetroArch + EmulationStation](#phase-4-retroarch--emulationstation-15-hours)
+   - [Phase 5: WireGuard VPN](#phase-5-wireguard-vpn-15-hours)
+   - [Phase 6: Firewall & Hardening](#phase-6-firewall--hardening-2-hours)
+   - [Phase 7: Monitoring & Logging](#phase-7-monitoring--logging-15-hours)
+   - [Phase 8: Intrusion Detection](#phase-8-intrusion-detection-15-hours)
+   - [Phase 9: Management Dashboard](#phase-9-management-dashboard-15-min)
 4. [Troubleshooting](#troubleshooting) - Solutions for common issues
 5. [References](#references) - Commands, links, resources
 6. [Summary](#summary) - What you've built, next steps
