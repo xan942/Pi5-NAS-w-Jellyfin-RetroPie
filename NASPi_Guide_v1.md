@@ -55,8 +55,8 @@ RESULT:   ✅ LUKS encryption (AES-256)
 1. [Architecture & Design](#architecture-and-design) - Understand the system
 2. [Technology Reasoning](#technology-reasoning) - Why each choice
 3. [Phases 1-9 Configuration](#phases-1-9-configuration) - Core NAS setup
-   - [Phase 1: Ubuntu Installation](#phase-1-ubuntu-installation-2-hours)
-   - [Phase 2: NVMe Partitioning & LUKS Encryption](#phase-2-nvme-partitioning--luks-encryption-1-2-hours)
+   - [Phase 1: Ubuntu Installation & NVMe Migration](#phase-1-ubuntu-installation--nvme-migration-2-3-hours)
+   - [Phase 2: Data Partition & LUKS Encryption](#phase-2-data-partition--luks-encryption-1-2-hours)
    - [Phase 3: Nextcloud + Jellyfin Practical Setup](#phase-3-nextcloud--jellyfin-practical-setup-3-hours)
    - [Phase 3.5: Jellyfin Security Hardening](#phase-35-jellyfin-security-hardening-2-3-hours)
    - [Phase 4: RetroArch + EmulationStation](#phase-4-retroarch--emulationstation-15-hours)
@@ -240,8 +240,8 @@ LAYER 1: Authentication & Access
 
 | Phase | Component | Time | Result |
 |-------|-----------|------|--------|
-| 1 | Ubuntu Installation | 2 hrs | Ubuntu 24.04 LTS booting from NVMe |
-| 2 | NVMe Partitioning & LUKS Encryption | 1-2 hrs | 3-partition layout, data volume AES-256 encrypted |
+| 1 | Ubuntu Installation & NVMe Migration | 2-3 hrs | Ubuntu 24.04 LTS booting from NVMe |
+| 2 | Data Partition & LUKS Encryption | 1-2 hrs | Encrypted data volume (p3) added, mounted at /mnt/data |
 | 3 | Nextcloud + Jellyfin | 3 hrs | File sync + media streaming, shared directory on encrypted volume |
 | 3.5 | Jellyfin Security Hardening | 2-3 hrs | HTTPS via nginx, Fail2ban, audit logging |
 | 4 | RetroArch + EmulationStation | 1.5 hrs | 50+ system game emulation on NVMe |
@@ -251,92 +251,288 @@ LAYER 1: Authentication & Access
 | 8 | Intrusion Detection | 1.5 hrs | AIDE file integrity, auditd syscall logging |
 | 9 | Management Dashboard | 15 min | Cockpit admin UI + Netdata real-time metrics |
 
-### Phase 1: Ubuntu Installation (2 hours)
+### Phase 1: Ubuntu Installation & NVMe Migration (2-3 hours)
+
+**Starting point:** Raspberry Pi 5 assembled with NVMe HAT and SSD, powered off. MicroSD card available for initial boot.
+
+---
+
+#### Step 1: Flash Ubuntu to microSD
+
+On a separate computer:
+
+1. Download **Raspberry Pi Imager** from [raspberrypi.com/software](https://www.raspberrypi.com/software/)
+2. Open Imager → **Choose OS** → Other general-purpose OS → Ubuntu → **Ubuntu Server 24.04 LTS (64-bit)**
+3. **Choose Storage** → select your microSD card
+4. Click the **gear icon** (advanced options) and configure:
+   ```
+   Set hostname:        naspi
+   Enable SSH:          ✅ (Use password authentication)
+   Set username:        pi   (or your preferred username)
+   Set password:        [strong password]
+   ```
+5. **Write** — this flashes and verifies the image
+
+Insert the microSD into the Pi 5. Do **not** boot yet.
+
+---
+
+#### Step 2: First Boot from microSD
+
+Connect the Pi to your router via Ethernet, then power on. Wait 60-90 seconds for cloud-init to complete first-boot setup.
+
+SSH in from another machine on your network:
 
 ```bash
-# Download Ubuntu 24.04 ARM64
-# Flash to microSD with Balena Etcher
-# Boot Pi 5, complete first-boot wizard
+ssh pi@naspi.local
+# If .local resolution doesn't work, find the Pi's IP via your router's device list
+```
 
-# Update packages
+Update packages and verify the kernel:
+
+```bash
 sudo apt-get update && sudo apt-get upgrade -y
+uname -r  # Should show 6.8 or later
+```
 
-# Set static IP
-sudo nano /etc/netplan/01-netcfg.yaml
-# Set: 192.168.1.x with gateway/DNS
+---
 
-# Apply network config
+#### Step 3: Set a Static IP
+
+```bash
+# Find your current network interface name (usually eth0)
+ip link show
+
+sudo nano /etc/netplan/50-cloud-init.yaml
+```
+
+Replace the contents with:
+
+```yaml
+network:
+  version: 2
+  ethernets:
+    eth0:
+      dhcp4: no
+      addresses:
+        - 192.168.1.x/24        # choose a free IP on your LAN
+      routes:
+        - to: default
+          via: 192.168.1.1      # your router IP
+      nameservers:
+        addresses: [1.1.1.1, 8.8.8.8]
+```
+
+```bash
 sudo netplan apply
 
-# Enable SSH
-sudo systemctl enable ssh
-sudo systemctl start ssh
-
-# Verify
-ssh ubuntu@192.168.1.x
-uname -r  # Should show kernel 6.8+
+# Reconnect SSH using the new static IP
+ssh pi@192.168.1.x
 ```
 
-### Phase 2: NVMe Partitioning & LUKS Encryption (1-2 hours)
+---
 
-**Starting point:** NVMe SSD physically installed in the Pi 5, blank or unpartitioned.
-
-Target layout:
-
-```
-nvme0n1
-├─ nvme0n1p1   512M        FAT32        /boot/firmware   (EFI/boot files)
-├─ nvme0n1p2    50G        ext4         /                (Ubuntu OS root)
-└─ nvme0n1p3  remaining    LUKS/ext4    /mnt/data        (encrypted user data)
-```
-
-#### Step 1: Confirm the drive is visible
+#### Step 4: Verify the NVMe SSD is Detected
 
 ```bash
-# The NVMe should appear as nvme0n1
 lsblk
-sudo fdisk -l /dev/nvme0n1
+# nvme0n1 should appear — if not, check the HAT seating and run:
+sudo apt-get install -y nvme-cli
+sudo nvme list
 ```
 
-If `nvme0n1` does not appear, check that the PCIe HAT is seated correctly and the Pi firmware is up to date (`sudo rpi-eeprom-update`).
+If the NVMe does not appear, power off and reseat the HAT connection before continuing.
 
-#### Step 2: Partition the drive
+---
+
+#### Step 5: Partition the NVMe for OS (p1 and p2)
+
+This creates only the boot and root partitions. The remaining space is left unpartitioned — Phase 2 will add the encrypted data partition (p3).
 
 ```bash
-# Install parted
 sudo apt-get install -y parted
 
-# Wipe any existing partition table and write a fresh GPT
+# Create a fresh GPT partition table
 sudo parted /dev/nvme0n1 --script mklabel gpt
 
-# Partition 1: boot (512MB, FAT32, marked as ESP)
+# p1: EFI/boot partition (512MB, FAT32)
 sudo parted /dev/nvme0n1 --script mkpart primary fat32 1MiB 513MiB
 sudo parted /dev/nvme0n1 --script set 1 esp on
 
-# Partition 2: OS root (50GB, ext4)
+# p2: OS root partition (50GB, ext4)
 sudo parted /dev/nvme0n1 --script mkpart primary ext4 513MiB 51713MiB
 
-# Partition 3: data (all remaining space)
-sudo parted /dev/nvme0n1 --script mkpart primary 51713MiB 100%
-
-# Confirm the layout
+# Confirm
 sudo parted /dev/nvme0n1 print
-lsblk /dev/nvme0n1
 ```
 
-#### Step 3: Format boot and root partitions
+Format the partitions:
 
 ```bash
-# p1 — FAT32 for EFI/boot
-sudo mkfs.fat -F32 /dev/nvme0n1p1
-
-# p2 — ext4 for Ubuntu root
+sudo mkfs.fat -F32 -n system-boot /dev/nvme0n1p1
 sudo mkfs.ext4 -L os-root /dev/nvme0n1p2
 ```
 
-> **If installing Ubuntu fresh:** Point the installer at these existing partitions — p1 as the EFI partition, p2 as `/`. Do not let the installer reformat them. Complete the Ubuntu install, boot into it, then continue with Step 4.
+---
 
-#### Step 4: Encrypt the data partition with LUKS
+#### Step 6: Clone the OS from microSD to NVMe
+
+Mount the NVMe root partition:
+
+```bash
+sudo mkdir -p /mnt/nvme-root
+sudo mount /dev/nvme0n1p2 /mnt/nvme-root
+
+sudo mkdir -p /mnt/nvme-root/boot/firmware
+sudo mount /dev/nvme0n1p1 /mnt/nvme-root/boot/firmware
+```
+
+Copy the root filesystem (excluding virtual and temporary directories):
+
+```bash
+sudo rsync -axv --progress / /mnt/nvme-root/ \
+  --exclude=/proc \
+  --exclude=/sys \
+  --exclude=/dev \
+  --exclude=/run \
+  --exclude=/tmp \
+  --exclude=/mnt \
+  --exclude=/media \
+  --exclude=/lost+found \
+  --exclude=/boot/firmware
+```
+
+Copy the boot files:
+
+```bash
+sudo rsync -axv --progress /boot/firmware/ /mnt/nvme-root/boot/firmware/
+```
+
+---
+
+#### Step 7: Update Boot Configuration on the NVMe
+
+The cloned OS still references the microSD's partition UUIDs. Update them to point to the NVMe.
+
+```bash
+# Get NVMe partition identifiers
+BOOT_UUID=$(sudo blkid -o value -s UUID /dev/nvme0n1p1)
+ROOT_UUID=$(sudo blkid -o value -s UUID /dev/nvme0n1p2)
+ROOT_PARTUUID=$(sudo blkid -o value -s PARTUUID /dev/nvme0n1p2)
+
+echo "Boot UUID:    $BOOT_UUID"
+echo "Root UUID:    $ROOT_UUID"
+echo "Root PARTUUID: $ROOT_PARTUUID"
+```
+
+Update **fstab** on the NVMe root:
+
+```bash
+sudo nano /mnt/nvme-root/etc/fstab
+```
+
+The file will have entries for `/` and `/boot/firmware` referencing the microSD's UUIDs or labels. Update them to:
+
+```
+UUID=<ROOT_UUID>   /               ext4   defaults        0 1
+UUID=<BOOT_UUID>   /boot/firmware  vfat   defaults        0 1
+```
+
+Update **cmdline.txt** on the NVMe boot partition (replaces the microSD's root PARTUUID):
+
+```bash
+# Get the microSD root PARTUUID (what's currently referenced in cmdline.txt)
+SD_PARTUUID=$(sudo blkid -o value -s PARTUUID /dev/mmcblk0p2)
+
+# Replace it with the NVMe root PARTUUID
+sudo sed -i "s/$SD_PARTUUID/$ROOT_PARTUUID/g" \
+  /mnt/nvme-root/boot/firmware/cmdline.txt
+
+# Verify the change looks correct
+cat /mnt/nvme-root/boot/firmware/cmdline.txt
+# root=PARTUUID=... should now show the NVMe PARTUUID
+```
+
+---
+
+#### Step 8: Configure Pi 5 to Boot from NVMe
+
+The Pi 5 boot order is stored in EEPROM. Update it to try NVMe first, falling back to microSD.
+
+```bash
+sudo apt-get install -y rpi-eeprom
+
+# Check current EEPROM config
+sudo rpi-eeprom-config
+
+# Write updated boot order
+# 0xf16 = NVMe (6) → SD card (1) → stop (f), read right to left
+cat > /tmp/nvme_boot.conf << 'EOF'
+BOOT_ORDER=0xf16
+EOF
+
+sudo rpi-eeprom-config --apply /tmp/nvme_boot.conf
+```
+
+Unmount the NVMe and reboot:
+
+```bash
+sudo umount /mnt/nvme-root/boot/firmware
+sudo umount /mnt/nvme-root
+
+sudo reboot
+```
+
+---
+
+#### Step 9: Verify Boot from NVMe
+
+After reboot, SSH back in and confirm the OS is running from the NVMe:
+
+```bash
+lsblk
+# Root (/) should be mounted on nvme0n1p2, not mmcblk0p2
+
+findmnt /
+# Should show: /dev/nvme0n1p2
+
+cat /proc/cmdline
+# Should show root=PARTUUID=<nvme-partuuid>
+```
+
+The microSD can remain inserted as a fallback boot device or be removed once you're confident the NVMe is stable.
+
+**Phase 2 will add and encrypt the data partition (p3) in the remaining NVMe space.**
+
+### Phase 2: Data Partition & LUKS Encryption (1-2 hours)
+
+**Starting point:** Pi 5 booted from NVMe (Phase 1 complete). p1 and p2 are in use by the OS. The rest of the drive is unpartitioned.
+
+```
+nvme0n1  (coming out of Phase 1)
+├─ nvme0n1p1   512M   FAT32   /boot/firmware   ← exists
+├─ nvme0n1p2    50G   ext4    /                ← exists
+└─ [remaining space unpartitioned]              ← Phase 2 adds p3 here
+```
+
+#### Step 1: Confirm free space
+
+```bash
+sudo parted /dev/nvme0n1 print free
+# Look for "Free Space" after nvme0n1p2 — that's where p3 will go
+```
+
+#### Step 2: Create the data partition (p3)
+
+```bash
+# Add p3 using all remaining space (starts at 51713MiB where p2 ends)
+sudo parted /dev/nvme0n1 --script mkpart primary 51713MiB 100%
+
+# Confirm p3 appears
+lsblk /dev/nvme0n1
+```
+
+#### Step 3: Encrypt the data partition with LUKS
 
 ```bash
 sudo apt-get install -y cryptsetup
