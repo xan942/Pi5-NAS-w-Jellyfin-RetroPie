@@ -65,7 +65,7 @@ Raspberry Pi 5 (8GB RAM)
 │     ├─ nvme0n1p1  512M    vfat        /boot/firmware   (EFI/boot)
 │     ├─ nvme0n1p2   50G    ext4        /                (Ubuntu OS root)
 │     └─ nvme0n1p3  ~200G   LUKS2/ext4  /mnt/data        (encrypted user data)
-│        └─ /dev/mapper/data → /mnt/data
+│        └─ /dev/mapper/data-crypt → /mnt/data
 │           ├─ nextcloud/   (Nextcloud data root — documents, photos, media)
 │           ├─ jellyfin/    (Jellyfin metadata cache)
 │           └─ retroarch/   (ROMs, saves, BIOS, configs)
@@ -549,11 +549,12 @@ sudo cryptsetup luksFormat --type luks2 /dev/nvme0n1p3
 # Verify the LUKS header
 sudo cryptsetup luksDump /dev/nvme0n1p3 | head -10
 
-# Unlock the container — maps it to /dev/mapper/data
-sudo cryptsetup luksOpen /dev/nvme0n1p3 data
+# Unlock the container — maps it to /dev/mapper/data-crypt
+sudo cryptsetup luksOpen /dev/nvme0n1p3 data-crypt
 
 # Create ext4 filesystem inside the LUKS container
-sudo mkfs.ext4 -L data /dev/mapper/data
+# -L data sets the filesystem label; the mapper name is data-crypt
+sudo mkfs.ext4 -L data /dev/mapper/data-crypt
 ```
 
 #### Step 5: Mount and configure auto-unlock on boot
@@ -561,7 +562,7 @@ sudo mkfs.ext4 -L data /dev/mapper/data
 ```bash
 # Create mount point and mount
 sudo mkdir -p /mnt/data
-sudo mount /dev/mapper/data /mnt/data
+sudo mount /dev/mapper/data-crypt /mnt/data
 
 # Set ownership to your user
 sudo chown $USER:$USER /mnt/data
@@ -571,10 +572,10 @@ sudo blkid /dev/nvme0n1p3
 # Note the UUID="xxxx..." TYPE="crypto_LUKS" value
 
 # Register with crypttab — will prompt for passphrase at each boot
-echo "data UUID=<your-uuid-here> none luks,discard" | sudo tee -a /etc/crypttab
+echo "data-crypt UUID=<your-uuid-here> none luks,discard" | sudo tee -a /etc/crypttab
 
 # Register with fstab — mounts after LUKS unlocks
-echo "/dev/mapper/data /mnt/data ext4 defaults,nofail 0 2" | sudo tee -a /etc/fstab
+echo "/dev/mapper/data-crypt /mnt/data ext4 defaults,nofail 0 2" | sudo tee -a /etc/fstab
 
 # Reload and verify
 sudo systemctl daemon-reload
@@ -586,16 +587,16 @@ sudo mount -a
 ```bash
 lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,LABEL
 df -h | grep /mnt/data
-sudo cryptsetup status data
+sudo cryptsetup status data-crypt
 ```
 
 Expected output:
 ```
-NAME        SIZE  TYPE  FSTYPE      MOUNTPOINT     LABEL
-nvme0n1p1   512M  part  vfat        /boot/firmware
-nvme0n1p2    50G  part  ext4        /              os-root
-nvme0n1p3  [xG]  part  crypto_LUKS
-└─data      [xG]  crypt ext4        /mnt/data      data
+NAME             SIZE TYPE  FSTYPE      MOUNTPOINT     LABEL
+nvme0n1p1        512M part  vfat        /boot/firmware
+nvme0n1p2         50G part  ext4        /              os-root
+nvme0n1p3        188G part  crypto_LUKS
+└─data-crypt     188G crypt ext4        /mnt/data      data
 ```
 
 ### Phase 3: Nextcloud + Jellyfin Practical Setup (3 hours)
@@ -1603,7 +1604,7 @@ report() {
   echo ""
 
   echo "--- LUKS Volume ---"
-  sudo cryptsetup status data 2>/dev/null | grep -E "type|cipher|keysize|device|size"
+  sudo cryptsetup status data-crypt 2>/dev/null | grep -E "type|cipher|keysize|device|size"
   echo ""
 
   echo "--- Memory ---"
@@ -2294,16 +2295,16 @@ sudo ss -tlnp | grep <port>
 
 ```bash
 # Check current status
-sudo cryptsetup status data
+sudo cryptsetup status data-crypt
 
 # Manually unlock
-sudo cryptsetup luksOpen /dev/nvme0n1p3 data
+sudo cryptsetup luksOpen /dev/nvme0n1p3 data-crypt
 
 # Manually mount
-sudo mount /dev/mapper/data /mnt/data
+sudo mount /dev/mapper/data-crypt /mnt/data
 
 # Check for filesystem errors (read-only check)
-sudo fsck -n /dev/mapper/data
+sudo fsck -n /dev/mapper/data-crypt
 ```
 
 #### Disk Space Issues
@@ -2442,8 +2443,8 @@ sudo wg show
 sudo systemctl restart wg-quick@wg0
 
 # LUKS
-sudo cryptsetup status data
-sudo mount /dev/mapper/data /mnt/data
+sudo cryptsetup status data-crypt
+sudo mount /dev/mapper/data-crypt /mnt/data
 
 # AIDE integrity check
 sudo aide --check

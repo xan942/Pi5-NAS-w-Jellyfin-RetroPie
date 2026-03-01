@@ -50,7 +50,7 @@ nvme0n1  (Silicon Power A60 256GB)
 ├─ p1    512M   FAT32   /boot/firmware   (EFI/boot partition)
 ├─ p2     50G   ext4    /                (Ubuntu OS root)
 └─ p3   ~200G   LUKS2   /mnt/data        (AES-256-XTS encrypted user data)
-         └─ /dev/mapper/data → /mnt/data
+         └─ /dev/mapper/data-crypt → /mnt/data
             ├─ nextcloud/     (Nextcloud data root — documents, photos)
             │  └─ <user>/files/
             │     └─ Media/   (Jellyfin reads here via ACL)
