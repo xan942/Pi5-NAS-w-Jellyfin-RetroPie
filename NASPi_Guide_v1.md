@@ -1252,31 +1252,146 @@ ping 100.64.0.1
 
 ### Phase 6: Firewall & Hardening (2 hours)
 
+#### Step 1: UFW Firewall
+
 ```bash
-# Enable UFW with default deny
+# Default policy: deny all inbound, allow all outbound
 sudo ufw default deny incoming
 sudo ufw default allow outgoing
+
+# SSH — LAN only, non-standard port (rate-limited)
+# Note: sshd is reconfigured to port 2222 in Step 2 below
+sudo ufw limit from 192.168.1.0/24 to any port 2222/tcp
+
+# WireGuard — open to internet (traffic is encrypted end-to-end)
+sudo ufw allow 51820/udp
+
+# Jellyfin via nginx — LAN and VPN
+sudo ufw allow from 192.168.1.0/24 to any port 8920/tcp
+sudo ufw allow from 100.64.0.0/24  to any port 8920/tcp
+
+# Block raw Jellyfin HTTP — should not be reachable outside localhost
+# (also set in Phase 3.5; included here as canonical firewall rule)
+sudo ufw deny in on eth0 to any port 8096
+
+# Nextcloud snap — LAN and VPN (both HTTP and HTTPS; snap handles redirect)
+sudo ufw allow from 192.168.1.0/24 to any port 80/tcp
+sudo ufw allow from 192.168.1.0/24 to any port 443/tcp
+sudo ufw allow from 100.64.0.0/24  to any port 80/tcp
+sudo ufw allow from 100.64.0.0/24  to any port 443/tcp
+
+# Cockpit + Netdata ports are added in Phase 9 when those services are installed
+
+# Enable UFW
 sudo ufw enable
 
-# Allow necessary services
-sudo ufw allow from 192.168.1.0/24 to any port 2222  # SSH
-sudo ufw allow from 192.168.1.0/24 to any port 8920  # Jellyfin
-sudo ufw allow from 192.168.1.0/24 to any port 443   # Nextcloud
-sudo ufw allow 51820/udp                              # WireGuard
-sudo ufw allow from 100.64.0.0/10 to any port 8920   # VPN access
-sudo ufw allow from 100.64.0.0/10 to any port 443
+# Verify — review every rule before continuing
+sudo ufw status verbose
+```
 
-# Generate SSL certificates
-sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-  -keyout /etc/ssl/private/nas-key.pem \
-  -out /etc/ssl/certs/nas-cert.pem
+---
 
-# Install AppArmor + auto-updates
-sudo apt-get install apparmor unattended-upgrades
-sudo systemctl enable apparmor unattended-upgrades
+#### Step 2: SSH Hardening
 
-# Verify firewall
-sudo ufw status
+**Important:** Complete all three steps in the same session. Keep your current SSH connection open until you have verified the new port works from a second connection.
+
+```bash
+sudo nano /etc/ssh/sshd_config
+```
+
+Find and update these lines (uncomment if needed):
+
+```
+Port 2222
+PermitRootLogin no
+PasswordAuthentication no
+AuthenticationMethods publickey
+MaxAuthTries 3
+LoginGraceTime 30
+```
+
+```bash
+# Test the config for syntax errors before restarting
+sudo sshd -t
+
+# Restart SSH
+sudo systemctl restart ssh
+
+# Verify sshd is listening on 2222
+sudo ss -tlnp | grep 2222
+```
+
+**Open a new terminal and confirm you can SSH in on port 2222 before closing the original session:**
+
+```bash
+ssh -p 2222 pi@192.168.1.x
+```
+
+> **If password auth is disabled and you don't have an SSH key set up yet:**
+> Set up key-based auth first — copy your public key to the Pi before disabling password auth:
+> ```bash
+> # Run this from your local machine (not the Pi)
+> ssh-copy-id -p 22 pi@192.168.1.x
+> # Then disable PasswordAuthentication and restart sshd
+> ```
+
+---
+
+#### Step 3: AppArmor
+
+AppArmor is installed and active by default on Ubuntu 24.04. Verify it is in enforcing mode:
+
+```bash
+sudo aa-status
+# Expected: "apparmor module is loaded" with profiles in enforce mode
+
+sudo systemctl is-enabled apparmor
+# Expected: enabled
+
+sudo systemctl status apparmor
+# Expected: active (exited)
+```
+
+If any profiles are in complain mode rather than enforce, switch them:
+
+```bash
+sudo aa-enforce /etc/apparmor.d/*
+```
+
+---
+
+#### Step 4: Automatic Security Updates
+
+```bash
+sudo apt-get install -y unattended-upgrades
+
+# Configure — select Yes when prompted
+sudo dpkg-reconfigure -plow unattended-upgrades
+
+# Verify the auto-upgrade timer is active
+sudo systemctl is-enabled unattended-upgrades
+sudo systemctl status apt-daily-upgrade.timer
+
+# Confirm security updates are enabled in the config
+grep "security" /etc/apt/apt.conf.d/50unattended-upgrades | grep -v "^//"
+```
+
+---
+
+#### Verify
+
+```bash
+# Firewall rules
+sudo ufw status verbose
+
+# SSH on new port
+sudo ss -tlnp | grep 2222
+
+# AppArmor enforcing
+sudo aa-status | head -5
+
+# Auto-updates active
+systemctl is-active unattended-upgrades
 ```
 
 ### Phase 7: Monitoring & Logging (1.5 hours)
