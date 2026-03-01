@@ -1,56 +1,39 @@
-# NASPi_Guide_v1: Comprehensive Raspberry Pi 5 Home NAS Implementation Manual
-## Master Guide - Option 2 (Nextcloud Edition) - Complete in One Document
+# NASPi Guide: Raspberry Pi 5 Home NAS
+## Implementation Manual — Nextcloud + Jellyfin + WireGuard + Gaming
 
-**Version:** 1.0 (Production-Ready)  
-**Status:** ✅ Enterprise-Grade Security + File Sync + Professional Monitoring  
-**Total Scope:** 3,500+ lines (consolidated from all guides)  
-**Primary Guide:** YES (start here - everything you need)  
-**Reference Guides:** Available in /outputs for deep dives  
+**Version:** 1.0
+**Platform:** Ubuntu 24.04 LTS ARM64 — Raspberry Pi 5 (8GB) + NVMe SSD
+**Status:** Production-Ready
 
 ---
 
 ## ⚡ PROJECT SUMMARY
 
 ```
-WHAT:     Secure home NAS with Nextcloud file sync, Jellyfin media,
-          RetroArch + EmulationStation gaming, WireGuard VPN, and professional monitoring
+WHAT:     Self-hosted home NAS — Nextcloud file sync, Jellyfin media
+          streaming, RetroArch + EmulationStation gaming, WireGuard VPN,
+          and professional monitoring on a Raspberry Pi 5
 
-WHY:      Production-grade security, privacy-focused, self-hosted,
-          fully documented, cost-effective ($300 vs $3,000+)
+WHY:      Privacy-focused, fully self-hosted, LUKS-encrypted storage,
+          layered security, no subscriptions, no cloud dependency
 
-HOW:      6-7 weeks, 17-22 hours total
-          Phases 1-9: Core NAS (from Enhanced guide)
-          Jellyfin security hardening (this guide)
-          Nextcloud + Cockpit + Netdata (this guide)
-          
-RESULT:   ✅ LUKS encryption (AES-256)
-          ✅ 6 overlapping security layers
-          ✅ Nextcloud auto file sync
-          ✅ Jellyfin 4K media streaming  
-          ✅ RetroArch + EmulationStation gaming (50+ systems)
-          ✅ WireGuard VPN (NYC ↔ LA)
-          ✅ Professional monitoring dashboards
-          ✅ Intrusion detection (AIDE/auditd/Tripwire)
-          ✅ Zero-trust firewall architecture
+HOW:      Phases 1–9 | ~20 hours total
+          From bare hardware (Pi 5 + NVMe) to production system,
+          step-by-step with copy-paste commands throughout
+
+RESULT:   ✅ LUKS2-encrypted data partition (AES-256-XTS)
+          ✅ Nextcloud file sync + Jellyfin media streaming
+          ✅ RetroArch + EmulationStation (50+ systems)
+          ✅ WireGuard VPN (standalone server, future router-ready)
+          ✅ UFW firewall + SSH hardening + AppArmor + Fail2ban
+          ✅ File integrity monitoring (AIDE + auditd)
+          ✅ Centralised logging, email alerts, daily health checks
+          ✅ Management dashboards (Cockpit + Netdata)
 ```
 
 ---
 
-## NAVIGATION - THIS IS YOUR MASTER GUIDE
-
-**Read this guide if:**
-- ✅ You want complete end-to-end implementation
-- ✅ You want everything in one document
-- ✅ You want architecture + reasoning + configuration + troubleshooting
-- ✅ You want copy-paste ready commands
-
-**Reference these guides for deep dives:**
-- `Pi5_NAS_Standalone_Setup_Guide_ENHANCED.md` - Detailed Phase 1-9 steps
-- `Jellyfin_Web_Access_Security_Hardening.md` - Advanced Jellyfin security
-- `MANAGEMENT.md` - Detailed Cockpit/Netdata setup
-- `NEXTCLOUD_TAILSCALE_ANALYSIS.md` - Nextcloud implementation details
-
-**Quick Links Below:**
+**Quick Links:**
 
 1. [Architecture & Design](#architecture-and-design) - Understand the system
 2. [Technology Reasoning](#technology-reasoning) - Why each choice
