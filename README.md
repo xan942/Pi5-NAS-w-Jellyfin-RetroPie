@@ -25,7 +25,7 @@ A complete, opinionated implementation guide for building a self-hosted home NAS
 - **Layered security** — UFW, SSH hardening, AppArmor, Fail2ban, AIDE, auditd
 - **Monitoring** — rsyslog, daily health checks, email alerts, Cockpit, Netdata
 
-All from bare hardware (Pi 5 + PCIe HAT + NVMe) in ~20 hours across Phases 1–9.
+All from bare hardware (Pi 5 + Geekworm X1001 + Silicon Power A60 256GB NVMe) in ~20 hours across Phases 1–9.
 
 ---
 
@@ -34,8 +34,8 @@ All from bare hardware (Pi 5 + PCIe HAT + NVMe) in ~20 hours across Phases 1–9
 | Component | Details |
 |---|---|
 | SBC | Raspberry Pi 5 (8GB) |
-| Storage interface | Waveshare PCIe HAT (PCIe Gen 3 x4 — native NVMe speed, no USB bottleneck) |
-| SSD | Any M.2 2280 NVMe SSD |
+| Storage interface | Geekworm X1001 PCIe HAT (PCIe Gen 3 x4 — supports M.2 2230/2242/2260/2280) |
+| SSD | Silicon Power A60 256GB NVMe M.2 PCIe Gen3x4 2280 (SP256GBP34A60M28) |
 | Cooling | Active (heatsink + fan — required under sustained load) |
 | Network | Gigabit Ethernet (required for reliable 4K streaming) |
 | Power | 27W official Raspberry Pi PSU |
@@ -46,10 +46,10 @@ All from bare hardware (Pi 5 + PCIe HAT + NVMe) in ~20 hours across Phases 1–9
 ## Storage Layout
 
 ```
-nvme0n1
-├─ p1   512M   FAT32   /boot/firmware   (EFI/boot partition)
-├─ p2    50G   ext4    /                (Ubuntu OS root)
-└─ p3   rest   LUKS2   /mnt/data        (AES-256-XTS encrypted user data)
+nvme0n1  (Silicon Power A60 256GB)
+├─ p1    512M   FAT32   /boot/firmware   (EFI/boot partition)
+├─ p2     50G   ext4    /                (Ubuntu OS root)
+└─ p3   ~200G   LUKS2   /mnt/data        (AES-256-XTS encrypted user data)
          └─ /dev/mapper/data → /mnt/data
             ├─ nextcloud/     (Nextcloud data root — documents, photos)
             │  └─ <user>/files/

@@ -2,7 +2,7 @@
 ## Implementation Manual — Nextcloud + Jellyfin + WireGuard + Gaming
 
 **Version:** 1.0
-**Platform:** Ubuntu 24.04 LTS ARM64 — Raspberry Pi 5 (8GB) + NVMe SSD
+**Platform:** Ubuntu 24.04 LTS ARM64 — Raspberry Pi 5 (8GB) + Geekworm X1001 + Silicon Power A60 256GB NVMe
 **Status:** Production-Ready
 
 ---
@@ -60,15 +60,15 @@ RESULT:   ✅ LUKS2-encrypted data partition (AES-256-XTS)
 
 ```
 Raspberry Pi 5 (8GB RAM)
-├─ Waveshare PCIe HAT (PCIe Gen 3 x4 — native NVMe, no USB bottleneck)
-├─ NVMe SSD
-│  ├─ nvme0n1p1  512M   vfat        /boot/firmware   (EFI/boot)
-│  ├─ nvme0n1p2   50G   ext4        /                (Ubuntu OS root)
-│  └─ nvme0n1p3  rest   LUKS2/ext4  /mnt/data        (encrypted user data)
-│     └─ /dev/mapper/data → /mnt/data
-│        ├─ nextcloud/   (Nextcloud data root — documents, photos, media)
-│        ├─ jellyfin/    (Jellyfin metadata cache)
-│        └─ retroarch/   (ROMs, saves, BIOS, configs)
+├─ Geekworm X1001 PCIe HAT (PCIe Gen 3 x4 — native NVMe, no USB bottleneck)
+│  └─ Silicon Power A60 256GB NVMe M.2 2280 (PCIe Gen3x4, ~2,200 MB/s read)
+│     ├─ nvme0n1p1  512M    vfat        /boot/firmware   (EFI/boot)
+│     ├─ nvme0n1p2   50G    ext4        /                (Ubuntu OS root)
+│     └─ nvme0n1p3  ~200G   LUKS2/ext4  /mnt/data        (encrypted user data)
+│        └─ /dev/mapper/data → /mnt/data
+│           ├─ nextcloud/   (Nextcloud data root — documents, photos, media)
+│           ├─ jellyfin/    (Jellyfin metadata cache)
+│           └─ retroarch/   (ROMs, saves, BIOS, configs)
 ├─ microSD card          (initial boot / fallback only — OS lives on NVMe)
 ├─ Active cooling        (heatsink + fan)
 ├─ Gigabit Ethernet      (wired — required for 4K streaming reliability)
@@ -109,7 +109,7 @@ LAYER 6: Encryption at Rest
 
 BASE: OS + Hardware
 ├─ Ubuntu 24.04 LTS ARM64
-└─ Raspberry Pi 5 + Waveshare PCIe HAT + NVMe SSD
+└─ Raspberry Pi 5 + Geekworm X1001 + Silicon Power A60 256GB NVMe
 ```
 
 ### Security Layers (5-Deep)
@@ -150,7 +150,7 @@ LAYER 1: At-Rest Encryption & Access Control
 
 **PCIe Gen 3 x4 changes everything:**
 - Pi 4: USB 3.0 bottleneck (400 MB/s max regardless of SSD speed)
-- Pi 5: Native PCIe Gen 3 x4 via Waveshare HAT (theoretical 3,500 MB/s — SSD is the real limit)
+- Pi 5: Native PCIe Gen 3 x4 via Geekworm X1001 (theoretical 3,500 MB/s — SSD is the real limit)
 - Result: NVMe performs at actual NVMe speeds, not USB speeds
 
 **Why not an x86 server?**
@@ -159,11 +159,12 @@ LAYER 1: At-Rest Encryption & Access Control
 - Larger physical footprint
 - Pi 5 runs Ubuntu 24.04 LTS with full apt ecosystem — it's not a toy
 
-### Why Waveshare PCIe HAT?
+### Why Geekworm X1001?
 
-- Exposes the Pi 5's PCIe Gen 3 interface to a standard M.2 NVMe slot
+- Exposes the Pi 5's native PCIe Gen 3 x4 interface to a standard M.2 NVMe slot
+- Supports M.2 2230, 2242, 2260, and 2280 form factors — compatible with most NVMe drives
 - Passive design — no additional power draw beyond the HAT connector
-- Widely tested with Pi 5; known-good compatibility with Ubuntu
+- Tested with Pi 5 and Ubuntu 24.04 LTS ARM64
 
 ### Why NVMe over USB SSD or microSD?
 
@@ -2502,7 +2503,8 @@ sudo ufw allow from 192.168.1.0/24 to any port 19999/tcp  # Netdata
 
 **Hardware:**
 - Raspberry Pi: https://www.raspberrypi.com/
-- Waveshare PCIe HAT: https://www.waveshare.com/
+- Geekworm X1001: https://geekworm.com/products/x1001
+- Silicon Power A60: https://www.silicon-power.com/web/us-product-SSD-A60
 
 ---
 
