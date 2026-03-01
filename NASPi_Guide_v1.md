@@ -268,43 +268,125 @@ ssh ubuntu@192.168.1.x
 uname -r  # Should show kernel 6.8+
 ```
 
-### Phase 2: LUKS Encryption (1-2 hours)
+### Phase 2: NVMe Partitioning & LUKS Encryption (1-2 hours)
 
-The NVMe SSD uses 3 partitions: p1 (boot), p2 (OS root), p3 (LUKS encrypted data).
-Partition p3 is the one you encrypt — the other two are created automatically by the Ubuntu installer.
+**Starting point:** NVMe SSD physically installed in the Pi 5, blank or unpartitioned.
+
+Target layout:
+
+```
+nvme0n1
+├─ nvme0n1p1   512M        FAT32        /boot/firmware   (EFI/boot files)
+├─ nvme0n1p2    50G        ext4         /                (Ubuntu OS root)
+└─ nvme0n1p3  remaining    LUKS/ext4    /mnt/data        (encrypted user data)
+```
+
+#### Step 1: Confirm the drive is visible
 
 ```bash
-# If p3 doesn't exist yet, create it with fdisk or parted
-# (skip if it already exists from OS install)
-sudo fdisk /dev/nvme0n1
-# → n (new partition), accept defaults to use remaining space
-# → w (write)
+# The NVMe should appear as nvme0n1
+lsblk
+sudo fdisk -l /dev/nvme0n1
+```
 
-# Format p3 as LUKS (you will be prompted for a passphrase — store it safely)
-sudo cryptsetup luksFormat /dev/nvme0n1p3
+If `nvme0n1` does not appear, check that the PCIe HAT is seated correctly and the Pi firmware is up to date (`sudo rpi-eeprom-update`).
 
-# Open the encrypted volume
+#### Step 2: Partition the drive
+
+```bash
+# Install parted
+sudo apt-get install -y parted
+
+# Wipe any existing partition table and write a fresh GPT
+sudo parted /dev/nvme0n1 --script mklabel gpt
+
+# Partition 1: boot (512MB, FAT32, marked as ESP)
+sudo parted /dev/nvme0n1 --script mkpart primary fat32 1MiB 513MiB
+sudo parted /dev/nvme0n1 --script set 1 esp on
+
+# Partition 2: OS root (50GB, ext4)
+sudo parted /dev/nvme0n1 --script mkpart primary ext4 513MiB 51713MiB
+
+# Partition 3: data (all remaining space)
+sudo parted /dev/nvme0n1 --script mkpart primary 51713MiB 100%
+
+# Confirm the layout
+sudo parted /dev/nvme0n1 print
+lsblk /dev/nvme0n1
+```
+
+#### Step 3: Format boot and root partitions
+
+```bash
+# p1 — FAT32 for EFI/boot
+sudo mkfs.fat -F32 /dev/nvme0n1p1
+
+# p2 — ext4 for Ubuntu root
+sudo mkfs.ext4 -L os-root /dev/nvme0n1p2
+```
+
+> **If installing Ubuntu fresh:** Point the installer at these existing partitions — p1 as the EFI partition, p2 as `/`. Do not let the installer reformat them. Complete the Ubuntu install, boot into it, then continue with Step 4.
+
+#### Step 4: Encrypt the data partition with LUKS
+
+```bash
+sudo apt-get install -y cryptsetup
+
+# Format p3 as a LUKS2 container (AES-256-XTS)
+# When prompted: type YES (uppercase), then set a strong passphrase
+# Store this passphrase in a password manager — if lost, data is unrecoverable
+sudo cryptsetup luksFormat --type luks2 /dev/nvme0n1p3
+
+# Verify the LUKS header
+sudo cryptsetup luksDump /dev/nvme0n1p3 | head -10
+
+# Unlock the container — maps it to /dev/mapper/data
 sudo cryptsetup luksOpen /dev/nvme0n1p3 data
 
 # Create ext4 filesystem inside the LUKS container
-sudo mkfs.ext4 /dev/mapper/data
+sudo mkfs.ext4 -L data /dev/mapper/data
+```
 
+#### Step 5: Mount and configure auto-unlock on boot
+
+```bash
 # Create mount point and mount
 sudo mkdir -p /mnt/data
 sudo mount /dev/mapper/data /mnt/data
 
-# Configure auto-unlock on boot via crypttab
-# Get the UUID of nvme0n1p3
+# Set ownership to your user
+sudo chown $USER:$USER /mnt/data
+
+# Get the UUID of the raw LUKS partition (not the mapper)
 sudo blkid /dev/nvme0n1p3
-# Copy the UUID value, then:
+# Note the UUID="xxxx..." TYPE="crypto_LUKS" value
+
+# Register with crypttab — will prompt for passphrase at each boot
 echo "data UUID=<your-uuid-here> none luks,discard" | sudo tee -a /etc/crypttab
 
-# Configure auto-mount via fstab
+# Register with fstab — mounts after LUKS unlocks
 echo "/dev/mapper/data /mnt/data ext4 defaults,nofail 0 2" | sudo tee -a /etc/fstab
 
-# Verify
-lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT
+# Reload and verify
+sudo systemctl daemon-reload
+sudo mount -a
+```
+
+#### Verify
+
+```bash
+lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,LABEL
 df -h | grep /mnt/data
+sudo cryptsetup status data
+```
+
+Expected output:
+```
+NAME        SIZE  TYPE  FSTYPE      MOUNTPOINT     LABEL
+nvme0n1p1   512M  part  vfat        /boot/firmware
+nvme0n1p2    50G  part  ext4        /              os-root
+nvme0n1p3  [xG]  part  crypto_LUKS
+└─data      [xG]  crypt ext4        /mnt/data      data
 ```
 
 ### Phase 3: Jellyfin (2 hours)
