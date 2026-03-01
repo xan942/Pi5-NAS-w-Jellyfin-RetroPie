@@ -985,97 +985,165 @@ crontab -e
 
 ### Phase 4: RetroArch + EmulationStation (1.5 hours)
 
-**What:** Install RetroArch emulator + EmulationStation frontend on Ubuntu  
-**Why:** Game emulation (50+ systems) on NVMe storage (faster than microSD)  
-**Time:** 1.5 hours  
-**Difficulty:** Intermediate
+RetroArch provides the emulation cores; EmulationStation Desktop Edition (ES-DE) provides the game-browsing frontend. All ROM and save data lives on the encrypted NVMe volume.
 
-**Note:** Unlike RetroPie (not officially supported on Ubuntu 24.04), RetroArch + EmulationStation is the manual but fully functional approach on Ubuntu.
+> **NAS context:** The Pi 5 runs headlessly as a NAS. Gaming requires an HDMI display and a controller or keyboard connected directly to the Pi. Start EmulationStation manually for a gaming session — it does not run as a background service.
+
+> **Why not RetroPie?** RetroPie is built for Raspberry Pi OS and is not officially supported on Ubuntu 24.04. RetroArch + ES-DE is the correct approach on Ubuntu ARM64.
+
+---
+
+#### Step 1: Directory Setup on Encrypted Volume
 
 ```bash
-# Create gaming directory structure on encrypted NVMe
-mkdir -p /mnt/data/retroarch/{roms,saves,configs,bios}
-mkdir -p /mnt/data/emulationstation
-
-# Install RetroArch and dependencies
-sudo apt-get install -y retroarch retroarch-assets
-sudo apt-get install -y libretro-{nestopia,snes9x,genesis-plus-gx,mupen64plus,dolphin}
-
-# Install EmulationStation
-sudo apt-get install -y emulationstation
-
-# Configure RetroArch to use NVMe storage
-nano ~/.config/retroarch/retroarch.cfg
-
-# Set these paths:
-# savefile_directory = /mnt/data/retroarch/saves
-# savestate_directory = /mnt/data/retroarch/saves
-# system_directory = /mnt/data/retroarch/bios
-
-# Create symbolic link for ROMs
-ln -s /mnt/data/retroarch/roms ~/.config/emulationstation/roms
-
-# Configure EmulationStation
-emulationstation --help
-
-# Add ROM files to /mnt/data/retroarch/roms/[system]/
-# Supported systems: nes, snes, genesis, n64, psx, etc.
-
-# Start EmulationStation
-emulationstation
-
-# Optional: Create systemd service for auto-start
-sudo nano /etc/systemd/system/emulationstation.service
-# [Unit]
-# Description=EmulationStation
-# After=network.target
-# 
-# [Service]
-# Type=simple
-# User=ubuntu
-# ExecStart=/usr/bin/emulationstation
-# 
-# [Install]
-# WantedBy=multi-user.target
-
-# Enable service
-sudo systemctl enable emulationstation
+mkdir -p /mnt/data/retroarch/roms/{nes,snes,genesis,n64,psx,gba,gbc}
+mkdir -p /mnt/data/retroarch/{saves,states,bios,configs}
 ```
 
-**Storage Structure:**
+---
+
+#### Step 2: Install RetroArch
+
+```bash
+sudo apt install -y retroarch
+```
+
+RetroArch installs to `/usr/bin/retroarch`. User config lives at `~/.config/retroarch/`.
+
+**Download emulation cores** via RetroArch's built-in Online Updater (recommended — always gets the latest core versions):
+
+```bash
+retroarch
+# Main Menu → Online Updater → Core Downloader
+```
+
+Cores to download:
+
+```
+Nestopia UE          → NES
+Snes9x               → SNES
+Genesis Plus GX      → Sega Genesis / Mega Drive / Game Gear
+Mupen64Plus-Next     → Nintendo 64
+PCSX-ReARMed         → PlayStation 1
+mGBA                 → Game Boy Advance
+Gambatte             → Game Boy / Game Boy Color
+```
+
+Alternatively, install available apt packages directly:
+
+```bash
+sudo apt install -y libretro-nestopia libretro-snes9x \
+  libretro-genesis-plus-gx libretro-mupen64plus \
+  libretro-pcsx-rearmed libretro-mgba libretro-gambatte
+```
+
+---
+
+#### Step 3: Configure RetroArch Storage Paths
+
+Point RetroArch at the NVMe directories so saves, states, and BIOS files land on the encrypted volume:
+
+```bash
+# Generate a default config if one doesn't exist yet
+retroarch --generate-config 2>/dev/null; true
+```
+
+Edit `~/.config/retroarch/retroarch.cfg` and set:
+
+```
+savefile_directory  = /mnt/data/retroarch/saves
+savestate_directory = /mnt/data/retroarch/states
+system_directory    = /mnt/data/retroarch/bios
+```
+
+Or set via the RetroArch UI: **Settings → Directory** → update Savefile, Savestate, and System to the paths above, then **Main Menu → Configuration File → Save Current Configuration**.
+
+---
+
+#### Step 4: Install EmulationStation Desktop Edition (ES-DE)
+
+ES-DE is the actively maintained cross-platform fork of EmulationStation. It supports Ubuntu 24.04 ARM64 and allows configuring a custom ROM directory.
+
+Install via Flatpak:
+
+```bash
+# Install Flatpak support
+sudo apt install -y flatpak
+flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+
+# Install ES-DE
+flatpak install flathub org.es_de.frontend
+```
+
+Launch ES-DE and point it at the NVMe ROM directory when prompted:
+
+```bash
+flatpak run org.es_de.frontend
+# First-launch wizard → ROM directory: /mnt/data/retroarch/roms
+```
+
+If ES-DE was previously configured with a different path, update it directly:
+
+```bash
+nano ~/.var/app/org.es_de.frontend/config/ES-DE/es_settings.xml
+# Find the ROMDirectory entry and set:
+# <string name="ROMDirectory" value="/mnt/data/retroarch/roms" />
+```
+
+---
+
+#### Storage Structure
+
 ```
 /mnt/data/retroarch/
-├─ roms/               (Game ROM files)
-│  ├─ nes/
-│  ├─ snes/
-│  ├─ genesis/
-│  ├─ n64/
-│  ├─ psx/
-│  └─ [other systems]/
-├─ saves/              (Game save files)
-├─ configs/            (RetroArch configurations)
-└─ bios/               (BIOS files for systems needing them)
+├─ roms/
+│  ├─ nes/       (.nes)
+│  ├─ snes/      (.sfc, .smc)
+│  ├─ genesis/   (.md, .bin)
+│  ├─ n64/       (.z64, .n64)
+│  ├─ psx/       (.bin + .cue, or .chd)
+│  ├─ gba/       (.gba)
+│  └─ gbc/       (.gbc)
+├─ saves/        (in-game save files, .srm etc.)
+├─ states/       (RetroArch save states)
+├─ bios/         (BIOS files — PSX requires SCPH*.bin)
+└─ configs/      (per-core and per-game RetroArch overrides)
 ```
 
-**Performance on Pi5 with NVMe:**
-```
-✅ 8/16-bit systems: Full speed (NES, SNES, Genesis)
-✅ PlayStation 1: Mostly playable (NVMe fast loading helps)
-✅ Nintendo 64: 30-40 FPS on most games
-✅ NVMe advantage: Faster ROM loading than microSD
-❌ GameCube/Wii: Not supported (too demanding)
-```
+---
 
-**Verification:**
+#### Performance on Pi 5
+
+| System | Performance | Recommended core |
+|---|---|---|
+| NES | Full speed | Nestopia UE |
+| SNES | Full speed | Snes9x |
+| Sega Genesis | Full speed | Genesis Plus GX |
+| Game Boy / GBC | Full speed | Gambatte |
+| Game Boy Advance | Full speed | mGBA |
+| PlayStation 1 | Full speed | PCSX-ReARMed |
+| Nintendo 64 | Mostly full speed | Mupen64Plus-Next |
+| GameCube / Wii | Not recommended | Too demanding for Pi 5 |
+
+NVMe storage means near-instant ROM loading even for large PSX disc images.
+
+---
+
+#### Verify
+
 ```bash
-# Test RetroArch
+# RetroArch installed
 retroarch --version
 
-# Check EmulationStation
-emulationstation --version
+# Storage directories exist on encrypted volume
+ls /mnt/data/retroarch/
 
-# Verify storage paths are correct
-ls -la /mnt/data/retroarch/
+# Config paths point to NVMe
+grep -E "savefile_directory|savestate_directory|system_directory" \
+  ~/.config/retroarch/retroarch.cfg
+
+# ES-DE installed via Flatpak
+flatpak list | grep -i "es.de\|esde"
 ```
 
 ### Phase 5: WireGuard VPN (1.5 hours)
