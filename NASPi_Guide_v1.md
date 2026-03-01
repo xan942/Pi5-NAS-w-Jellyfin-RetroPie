@@ -2043,7 +2043,7 @@ Morning Check (2 minutes):
 
 ---
 
-## TROUBLESHOOTING 
+## TROUBLESHOOTING
 
 ### Installation Issues
 
@@ -2051,88 +2051,81 @@ Morning Check (2 minutes):
 
 **Symptom:** "No key available with this passphrase"
 
-**Solutions:**
 ```
 1. Check CAPS LOCK is off
-2. Try another keyfile if configured
-3. Verify passphrase stored securely
-4. If forgotten → SSD data lost (by design, unrecoverable)
-   └─ Reinstall Ubuntu, start over
-5. Prevention: Store in password manager
+2. Verify passphrase stored securely (password manager)
+3. If forgotten → SSD data is unrecoverable by design
+   └─ Reinstall Ubuntu, repeat Phase 2
 ```
 
-#### Jellyfin HTTPS Port Not Accessible
+#### Jellyfin Not Accessible on Port 8920
 
-**Symptom:** "Connection refused" on port 8920
+**Symptom:** "Connection refused" or blank page on port 8920
 
-**Debug:**
+Port 8920 is served by **nginx** (reverse proxy). Debug both nginx and Jellyfin:
+
 ```bash
-# Check Jellyfin running
+# Check nginx config is valid and running
+sudo nginx -t
+sudo systemctl status nginx
+
+# Check port 8920 is listening
+sudo ss -tlnp | grep 8920
+
+# Check Jellyfin internal service (port 8096)
 sudo systemctl status jellyfin
+sudo ss -tlnp | grep 8096
 
-# Check port listening
-sudo lsof -i :8920
+# Check nginx error log
+sudo tail -20 /var/log/nginx/error.log
 
-# Check certificate exists
-ls -la /etc/jellyfin/ssl-cert.pem
-
-# Check firewall allows
+# Check firewall
 sudo ufw status | grep 8920
 
-# Restart if needed
-sudo systemctl restart jellyfin
-
-# Try accessing
-https://192.168.1.x:8920 (use IP not hostname)
+# Restart nginx
+sudo systemctl restart nginx
 ```
 
 #### WireGuard Won't Connect
 
-**Symptom:** "Connection timeout" from laptop
+**Symptom:** "Connection timeout" from client device
 
-**Debug:**
 ```bash
-# Check WireGuard running on Pi
+# Check WireGuard running on NASPi
 sudo systemctl status wg-quick@wg0
 sudo wg show
 
-# Check firewall port
+# Check firewall port open
 sudo ufw status | grep 51820
 
-# Verify keys correct
-cat /etc/wireguard/wg0.conf | grep -i key
+# Verify keys match between server and client config
+sudo grep PublicKey /etc/wireguard/wg0.conf
 
-# Test from Pi
-ping 100.64.0.1
+# Check IP forwarding is enabled
+sysctl net.ipv4.ip_forward
 
-# On laptop, test connection
-wg-quick up wg0
-ping 100.64.0.1
-
-# Check firewall on both ends
+# Confirm VPN interface is up
+ip addr show wg0  # should show 100.64.0.1/24
 ```
+
+Also confirm your home router is forwarding UDP port 51820 to the NASPi's LAN IP.
 
 ### Service Issues
 
 #### Service Won't Start
 
 ```bash
-# Check status and logs
-sudo systemctl status jellyfin -n 100
-sudo journalctl -u jellyfin -n 50
+# Check status and recent logs
+sudo systemctl status <service> -n 50
+sudo journalctl -u <service> -n 50
 
-# Check for obvious errors
-sudo jellyfin --version
+# Common services: jellyfin, nginx, snap.nextcloud.*, wg-quick@wg0, fail2ban
 
-# Restart and watch logs
-sudo systemctl restart jellyfin
-sudo journalctl -u jellyfin -f
+# Watch live logs
+sudo journalctl -u <service> -f
 
-# Check port conflicts
-sudo lsof -i :8096
-
-# Fix permissions if needed
-sudo chown -R jellyfin:jellyfin /var/lib/jellyfin
+# Check for port conflicts
+sudo ss -tlnp | grep <port>
 ```
 
 ### Storage & Encryption Issues
@@ -2140,16 +2133,16 @@ sudo chown -R jellyfin:jellyfin /var/lib/jellyfin
 #### LUKS Volume Won't Mount
 
 ```bash
-# Check status
+# Check current status
 sudo cryptsetup status data
 
-# Try manual unlock
+# Manually unlock
 sudo cryptsetup luksOpen /dev/nvme0n1p3 data
 
-# Manual mount
+# Manually mount
 sudo mount /dev/mapper/data /mnt/data
 
-# Check disk errors
+# Check for filesystem errors (read-only check)
 sudo fsck -n /dev/mapper/data
 ```
 
@@ -2162,10 +2155,9 @@ du -sh /mnt/data/*
 # Find large files
 find /mnt/data -size +1G -type f
 
-# Check Jellyfin/Nextcloud data
+# Check Nextcloud and media data
 du -sh /mnt/data/nextcloud/
-du -sh /mnt/data/jellyfin/
-du -sh /mnt/data/retroarch/
+du -sh /mnt/data/Media/
 ```
 
 ### Network & Remote Access Issues
@@ -2176,138 +2168,114 @@ du -sh /mnt/data/retroarch/
 
 ```bash
 # Verify VPN IP assigned
-ip addr show wg0  # should show 100.64.0.x
+ip addr show wg0  # should show 100.64.0.x/24
 
-# Check firewall allows VPN range
+# Check firewall allows VPN subnet
 sudo ufw status | grep 100.64
 
-# Verify service listening on all IPs
-sudo lsof -i :8920  # should show 0.0.0.0
+# Verify nginx is listening
+sudo ss -tlnp | grep 8920
 
-# Test from Pi directly
-curl http://127.0.0.1:8096
+# Test nginx directly from NASPi
+curl -k https://127.0.0.1:8920
 
-# Restart firewall
+# Restart firewall if rules seem stale
 sudo systemctl restart ufw
 ```
 
-#### Remote Storage Too Slow
+#### VPN Throughput Lower Than Expected
 
-**Symptom:** Only 50 MB/s through VPN (should be 300-400)
+**Symptom:** Noticeably slow transfers over WireGuard
 
 ```bash
-# Check WireGuard throughput
-sudo wg show  # watch tx/rx bytes
+# Check WireGuard traffic
+sudo wg show  # watch transfer bytes increment
 
-# Check internet speed
-speedtest-cli  # from both locations
+# Check CPU temperature (throttling degrades performance)
+awk '{printf "%.1f°C\n", $1/1000}' /sys/class/thermal/thermal_zone0/temp
 
-# Check if using USB drives (slow)
-iostat -x 1   # watch disk utilization
+# Check CPU frequency
+cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq
 
-# Check CPU throttling (temperature)
-vcgencmd measure_temp
-vcgencmd measure_clock arm
-
-# If hot:
-├─ Improve cooling (fan speed)
-└─ Reduce load (stop unnecessary services)
+# Check disk I/O
+iostat -x 1
 ```
 
-### Performance & Monitoring Issues
+WireGuard on Pi 5 should sustain 300–400 MB/s; if lower, check internet bandwidth on both ends and ensure no thermal throttling.
 
-#### Cockpit/Netdata Using Too Much CPU
+### Monitoring & Alerting Issues
+
+#### Cockpit or Netdata Using Too Much CPU
 
 ```bash
-# Check what's consuming
-top  # sort by CPU
-ps aux | grep -E "cockpit|netdata"
+# Identify the process
+ps aux | grep -E "cockpit|netdata" | sort -k3 -nr
 
-# If Netdata:
+# For Netdata: reduce update frequency
 sudo nano /etc/netdata/netdata.conf
-# Reduce: update every = 2 (from 1)
-# Or: history = 1440 (from 10080)
+# Set: update every = 2   (default is 1 second)
 sudo systemctl restart netdata
 
-# If Cockpit:
+# Cockpit stays active while a browser tab is open — close idle sessions
 sudo systemctl restart cockpit.socket
 ```
 
-#### Netdata Alerts Not Sending
+#### Email Alerts Not Arriving
+
+Health check emails are sent via **Postfix** (Gmail relay, configured in Phase 7).
 
 ```bash
-# Verify email config
-grep -i "send_email\|recipients" \
-  /etc/netdata/health_alarm_notify.conf
+# Confirm Postfix is running
+sudo systemctl status postfix
 
-# Test email system
-echo "test" | mail -s "Test" your-email@example.com
+# Send a manual test
+echo "NASPi email test" | mail -s "NASPi Test" your@gmail.com
 
-# Check mail logs
+# Watch the mail log for delivery status
 sudo tail -f /var/log/mail.log
 
-# Test Netdata alert
-sudo /usr/libexec/netdata/plugins.d/alarm-notify.sh test
+# Verify credentials file exists and is protected
+sudo ls -la /etc/postfix/sasl_passwd*
 
-# Restart Netdata
-sudo systemctl restart netdata
+# Re-run health check manually
+~/health-check.sh
+```
+
+If delivery fails with "authentication failed", re-generate your Gmail App Password, update `/etc/postfix/sasl_passwd`, then run:
+
+```bash
+sudo postmap /etc/postfix/sasl_passwd
+sudo systemctl restart postfix
 ```
 
 ---
 
-## REFERENCES 
-
-### All Your Documentation
-
-```
-In /mnt/user-data/outputs/:
-
-PRIMARY (Read First):
-├─ NASPi_Guide_v1.md ← YOU ARE HERE (this file)
-│  Contains everything integrated in one place
-│
-REFERENCE (Deep Dives):
-├─ Pi5_NAS_Standalone_Setup_Guide_ENHANCED.md
-│  └─ Detailed Phases 1-9 with all commands
-├─ Jellyfin_Web_Access_Security_Hardening.md
-│  └─ Advanced Jellyfin security features
-├─ MANAGEMENT.md
-│  └─ Detailed Cockpit + Netdata setup
-├─ NEXTCLOUD_TAILSCALE_ANALYSIS.md
-│  └─ Nextcloud implementation options
-│
-OPTIONAL REFERENCES:
-├─ Pi5_NAS_Hardware_Monitoring_Dashboard.md
-│  └─ 4 different monitoring tool options
-├─ JELLYFIN_SECURITY_ISSUES_MAPPING.md
-│  └─ All 10 security issues mapped to solutions
-└─ README.md
-   └─ Project overview
-```
+## REFERENCES
 
 ### Essential Command Reference
 
 ```bash
-# System Status
-sudo systemctl status jellyfin smbd sshd ufw fail2ban
-sudo df -h
-vcgencmd measure_temp
+# System status
+sudo systemctl status jellyfin nginx fail2ban wg-quick@wg0
+df -h
+awk '{printf "%.1f°C\n", $1/1000}' /sys/class/thermal/thermal_zone0/temp
 free -h
+uptime
 
-# Service Management
-sudo systemctl restart [service]
-sudo systemctl enable [service]
-sudo systemctl stop [service]
-
-# Firewall
-sudo ufw status
-sudo ufw allow from 192.168.1.0/24 to any port 8920
-sudo ufw delete allow 8920
+# Service management
+sudo systemctl restart <service>
+sudo systemctl enable <service>
+sudo systemctl stop <service>
 
 # Logs
-journalctl -u jellyfin -f
-journalctl -n 50
-sudo tail -f /var/log/syslog
+sudo journalctl -u <service> -f
+sudo journalctl -n 50
+sudo tail -f /var/log/nas/auth.log
+
+# Firewall
+sudo ufw status verbose
+sudo ufw allow from 192.168.1.0/24 to any port <port>
+sudo ufw delete allow <port>
 
 # WireGuard
 sudo wg show
@@ -2317,261 +2285,123 @@ sudo systemctl restart wg-quick@wg0
 sudo cryptsetup status data
 sudo mount /dev/mapper/data /mnt/data
 
-# Monitoring
-top
-ps aux | grep jellyfin
-lsof -i :8920
+# AIDE integrity check
+sudo aide --check
+
+# Audit log search
+sudo ausearch -k identity --interpret
+sudo aureport --auth
 ```
 
 ### Firewall Rules Reference
 
-```bash
-# LAN access (192.168.1.0/24)
-sudo ufw allow from 192.168.1.0/24 to any port 2222    # SSH
-sudo ufw allow from 192.168.1.0/24 to any port 8920    # Jellyfin
-sudo ufw allow from 192.168.1.0/24 to any port 443     # Nextcloud
-sudo ufw allow from 192.168.1.0/24 to any port 9090    # Cockpit
-sudo ufw allow from 192.168.1.0/24 to any port 19999   # Netdata
+Current UFW rules as configured in Phase 6:
 
-# WireGuard
+```bash
+# SSH (LAN only, rate-limited)
+sudo ufw limit from 192.168.1.0/24 to any port 2222/tcp
+
+# WireGuard (open to WAN for VPN connections)
 sudo ufw allow 51820/udp
 
-# VPN access (100.64.0.0/10)
-sudo ufw allow from 100.64.0.0/10 to any port 8920
-sudo ufw allow from 100.64.0.0/10 to any port 443
-sudo ufw allow from 100.64.0.0/10 to any port 9090
-sudo ufw allow from 100.64.0.0/10 to any port 19999
+# Jellyfin via nginx (LAN + VPN)
+sudo ufw allow from 192.168.1.0/24 to any port 8920/tcp
+sudo ufw allow from 100.64.0.0/24  to any port 8920/tcp
+
+# Block direct Jellyfin access
+sudo ufw deny in on eth0 to any port 8096
+
+# Nextcloud / nginx HTTP + HTTPS (LAN + VPN)
+sudo ufw allow from 192.168.1.0/24 to any port 80/tcp
+sudo ufw allow from 192.168.1.0/24 to any port 443/tcp
+sudo ufw allow from 100.64.0.0/24  to any port 80/tcp
+sudo ufw allow from 100.64.0.0/24  to any port 443/tcp
+
+# Management dashboards (LAN only)
+sudo ufw allow from 192.168.1.0/24 to any port 9090/tcp   # Cockpit
+sudo ufw allow from 192.168.1.0/24 to any port 19999/tcp  # Netdata
 ```
 
 ### External Resources
 
-**Software Documentation:**
+**Software:**
 - Ubuntu 24.04: https://ubuntu.com/download/raspberry-pi
-- Jellyfin: https://docs.jellyfin.org/
 - Nextcloud: https://docs.nextcloud.com/
-- RetroArch: https://docs.libretro.com/
+- Jellyfin: https://jellyfin.org/docs/
+- RetroArch / Libretro: https://docs.libretro.com/
 - EmulationStation: https://emulationstation.org/
 - WireGuard: https://www.wireguard.com/
 - Cockpit: https://cockpit-project.org/
 - Netdata: https://learn.netdata.cloud/
 
 **Security:**
-- LUKS: https://gitlab.com/cryptsetup/cryptsetup
+- LUKS / cryptsetup: https://gitlab.com/cryptsetup/cryptsetup
 - AIDE: https://aide.github.io/
 - Fail2ban: https://www.fail2ban.org/
 - AppArmor: https://gitlab.com/apparmor/apparmor/-/wikis/home
+- auditd: https://github.com/linux-audit/audit-documentation
 
 **Hardware:**
 - Raspberry Pi: https://www.raspberrypi.com/
-- Kingston SSD: https://www.kingston.com/en/support
-- Waveshare: https://www.waveshare.com/
+- Waveshare PCIe HAT: https://www.waveshare.com/
 
+---
 
-
-## SUMMARY 
+## SUMMARY
 
 ### What You've Built
 
-```bash
-✅ ENTERPRISE SECURITY (6 layers deep)
-   ├─ LUKS encryption (AES-256)
-   ├─ SSH key-based auth
-   ├─ Fail2ban brute-force protection
-   ├─ AIDE + auditd + Tripwire
-   ├─ AppArmor mandatory access control
-   └─ Automatic security updates
+```
+✅ ENCRYPTED STORAGE
+   ├─ LUKS2 data partition (AES-256-XTS) on NVMe SSD
+   ├─ Automatic unlock via crypttab on boot
+   └─ All user data encrypted at rest
 
-✅ MODERN FILE SYNC (Nextcloud)
-   ├─ Auto-sync between devices
-   ├─ Phone photo backup
-   ├─ Document versioning
-   ├─ Collaborative editing
-   ├─ Web + mobile access
-   └─ Stored on encrypted SSD
+✅ FILE SYNC & MEDIA  (Nextcloud + Jellyfin)
+   ├─ Nextcloud: auto-sync documents and photos across devices
+   ├─ Jellyfin: 4K media streaming, multi-user library
+   ├─ Shared directory with ACL permissions on /mnt/data
+   └─ Selective sync — documents via Nextcloud, media via Jellyfin
 
-✅ MEDIA STREAMING (Jellyfin)
-   ├─ 4K streaming capability
-   ├─ Multi-user library
-   ├─ Secure SSL/TLS
-   ├─ Hardened web access
-   └─ Privacy-respecting
-
-✅ GAMING EMULATION (RetroArch + EmulationStation)
-   ├─ 50+ console systems (NES, SNES, Genesis, N64, PSX, etc)
-   ├─ Installed on Ubuntu 24.04 (not microSD)
-   ├─ Game storage on encrypted NVMe SSD
+✅ GAMING EMULATION  (RetroArch + EmulationStation)
+   ├─ 50+ console systems (NES, SNES, N64, PSX, and more)
+   ├─ Game storage on encrypted NVMe
    ├─ Full controller support
-   └─ Zero interference with NAS services
+   └─ Isolated from NAS services — no interference
 
-✅ REMOTE ACCESS (WireGuard VPN)
-   ├─ Fast (400+ MB/s)
-   ├─ Simple (1,000 lines code)
-   ├─ Secure (modern crypto)
-   └─ Low CPU usage (<1%)
+✅ REMOTE ACCESS  (WireGuard VPN)
+   ├─ Standalone VPN server on NASPi (100.64.0.1/24)
+   ├─ Split-tunnel client — only NAS traffic routes through VPN
+   ├─ Future-ready: reconfigurable when Pi 5 privacy router is deployed
+   └─ Low overhead (<1% CPU)
 
-✅ PROFESSIONAL MONITORING
-   ├─ Cockpit admin interface
-   ├─ Netdata real-time graphs
-   ├─ Email alerts
-   ├─ 7-day historical data
-   └─ Service health tracking
+✅ SECURITY LAYERS
+   ├─ UFW: default deny, LAN + VPN allowlist only
+   ├─ SSH: port 2222, key-only auth, no root login
+   ├─ Fail2ban: SSH + Jellyfin jails
+   ├─ AppArmor: enforcing mode (Ubuntu default)
+   ├─ unattended-upgrades: automatic security patches
+   └─ AIDE + auditd: file integrity + kernel audit logging
 
-✅ AUTOMATED RELIABILITY
-   ├─ AIDE daily integrity checks
-   ├─ Netdata + Cockpit health monitoring
-   └─ Email alerts on anomalies
+✅ MONITORING & ALERTING
+   ├─ rsyslog: centralised log routing to /var/log/nas/
+   ├─ Daily health check script (disk, LUKS, temp, services, auth)
+   ├─ Email alerts via Postfix + Gmail relay
+   ├─ Cockpit: browser-based admin interface (port 9090)
+   └─ Netdata: real-time metrics dashboard (port 19999)
 ```
 
-### Key Achievements
-
-| Metric | Achievement |
-|--------|-------------|
-| **Security** | Enterprise-grade (6-layer defense) |
-| **Cost** | 1/10th of commercial NAS |
-| **Learning** | Professional DevOps platform |
-| **Privacy** | Complete data control |
-| **Performance** | 2.5 TB/s SSD, 400 MB/s VPN |
-| **Uptime** | 24/7 self-hosted services |
-| **Operations** | 3-5 min daily, 30 min monthly |
-
-### Timeline Summary
+### Community & Support
 
 ```
-Week 1-2:  Foundation (OS + Encryption)                        2.5-3 hrs
-Week 2-3:  Services (Nextcloud + Jellyfin + RetroArch/ES)      4.5 hrs
-Week 3-4:  Remote Access (VPN + Firewall)                      3.5 hrs
-Week 4-5:  Advanced Security (Monitoring + IDS + Cockpit/Netdata)  4.75 hrs
-────────────────────────────────────────────────────────────────
-TOTAL:     5-6 weeks                                   15-19 hrs
+Jellyfin:       https://forum.jellyfin.org/
+Nextcloud:      https://help.nextcloud.com/
+Raspberry Pi:   https://forums.raspberrypi.com/
+WireGuard:      https://www.wireguard.com/#community
 ```
 
-### Your Next Steps
-
-#### Immediate (Today)
-```
-1. ✓ Read NASPi_Guide_v1 (this guide) ← You're doing this!
-2. ✓ Understand architecture + reasoning
-3. ✓ Review technology choices
-4. Gather hardware
-5. Download Ubuntu 24.04 ARM64 ISO
-6. Plan network addressing
-7. Set up workspace
-```
-
-#### Short Term (This Week)
-```
-1. Flash Ubuntu to microSD
-2. Boot Pi 5 (Phase 1)
-3. Encrypt SSD (Phase 2)
-4. Start Jellyfin (Phase 3)
-```
-
-#### Medium Term (Weeks 2-4)
-```
-1. Complete Phases 3-6
-2. Setup WireGuard VPN
-3. Configure security layers
-4. Test remote access
-```
-
-#### Long Term (Weeks 4-5)
-```
-1. Complete Phases 7-8
-2. Add Cockpit + Netdata
-3. Enjoy professional NAS!
-```
-
----
-
-## FINAL NOTES
-
-### This Guide vs Reference Guides
-
-**Use NASPi_Guide_v1.md (this file) for:**
-- ✅ Complete end-to-end overview
-- ✅ Architecture understanding
-- ✅ Technology reasoning
-- ✅ Quick command reference
-- ✅ Troubleshooting
-- ✅ Everything in one place
-
-**Use reference guides for:**
-- 🔍 Detailed step-by-step instructions
-- 🔍 Advanced configuration options
-- 🔍 Additional security hardening
-- 🔍 Performance tuning
-- 🔍 Specific technology deep dives
-
-### Support Structure
-
-```
-If you're stuck:
-1. Search NASPi_Guide_v1 (this file)
-2. Read relevant reference guide
-3. Check troubleshooting section
-4. Follow detailed command-by-command
-5. Verify with quick reference
-```
-
-### You're Not Alone
-
-```
-Community:
-├─ Jellyfin community: https://jellyfin.org
-├─ Raspberry Pi forums: https://forums.raspberrypi.com
-├─ Nextcloud community: https://help.nextcloud.com
-└─ WireGuard: https://www.wireguard.com/#community
-
-Debugging:
-├─ systemctl status [service]
-├─ journalctl -u [service] -f
-├─ Google error messages
-└─ Check official docs
-```
-
----
-
-## DEPLOYMENT CHECKLIST
-
-Before you start, verify you have:
-
-```
-Hardware:
-☐ Raspberry Pi 5 (8GB)
-☐ Kingston P34A60 SSD (2TB)
-☐ Waveshare PCIe HAT x1001
-☐ Active cooling (heatsink + fan)
-☐ 25W official PSU
-☐ Gigabit Ethernet cable
-☐ microSD card (64GB)
-
-Software:
-☐ Ubuntu 24.04 ARM64 ISO
-☐ Balena Etcher or similar
-☐ Password manager (for passphrases)
-☐ Text editor (for config files)
-☐ SSH client (for remote access)
-
-Network:
-☐ Static IP planned (192.168.1.x)
-☐ Router access available
-☐ Gigabit network connection
-☐ WireGuard keys ready (generated during setup)
-☐ Firewall rules documented
-
-Time & Space:
-☐ 17-22 hours available
-☐ 6-7 weeks timeline
-☐ Workspace for hardware assembly
-☐ Linux knowledge (or patience to learn)
-```
-
----
-
-**Status:** ✅ Production-Ready  
-**Difficulty:** Intermediate  
-**Time:** 6-7 weeks  
-**Reward:** Professional home NAS with enterprise security  
-
-**Let's build something awesome! 🚀**
+If you run into an issue:
+1. Check the Troubleshooting section above
+2. Search the relevant project's forum or GitHub issues
+3. `sudo journalctl -u <service> -f` — live logs almost always tell the story
 
