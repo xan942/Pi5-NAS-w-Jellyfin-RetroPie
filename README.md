@@ -146,7 +146,7 @@ Internet
 Pi5-NAS-w-Jellyfin-RetroPie/
 ├── README.md           ← This file
 ├── NASPi_Guide_v1.md  ← Complete implementation guide (Phases 1–9)
-└── Docs/              ← Legacy reference documents (pre-rewrite)
+└── Old Docs/          ← Legacy reference documents (pre-rewrite, kept for reference)
 ```
 
 ---
