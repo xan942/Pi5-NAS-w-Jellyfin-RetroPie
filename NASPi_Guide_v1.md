@@ -575,7 +575,7 @@ sudo blkid /dev/nvme0n1p3
 echo "data-crypt UUID=<your-uuid-here> none luks,discard" | sudo tee -a /etc/crypttab
 
 # Register with fstab — mounts after LUKS unlocks
-echo "/dev/mapper/data-crypt /mnt/data ext4 defaults,nofail 0 2" | sudo tee -a /etc/fstab
+echo "/dev/mapper/data-crypt /mnt/data ext4 defaults,noatime 0 2" | sudo tee -a /etc/fstab
 
 # Reload and verify
 sudo systemctl daemon-reload
