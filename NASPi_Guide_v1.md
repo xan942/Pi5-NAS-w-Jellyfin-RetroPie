@@ -1097,34 +1097,158 @@ ls -la /mnt/data/retroarch/
 
 ### Phase 5: WireGuard VPN (1.5 hours)
 
+> **Scope of this phase:** NASPi is configured as a standalone WireGuard server — remote devices connect directly to it over the internet. This is the correct setup for the current single-Pi network topology.
+> See the [Future Router Note](#future-router-note) at the end of this phase before a Pi 5 router is added to the network.
+
+#### Step 1: Enable IP Forwarding
+
+WireGuard needs the kernel to forward packets between interfaces. Without this, connected clients can reach NASPi but not the LAN behind it.
+
 ```bash
-# Install WireGuard
-sudo apt-get install wireguard wireguard-tools
+echo "net.ipv4.ip_forward = 1" | sudo tee /etc/sysctl.d/99-wireguard.conf
+sudo sysctl -p /etc/sysctl.d/99-wireguard.conf
 
-# Generate keys (on Pi)
-cd /etc/wireguard
-sudo wg genkey | sudo tee privatekey | sudo wg pubkey > publickey
-sudo chmod 600 privatekey
+# Verify
+sysctl net.ipv4.ip_forward
+# Expected: net.ipv4.ip_forward = 1
+```
 
-# Create /etc/wireguard/wg0.conf
+#### Step 2: Install WireGuard
+
+```bash
+sudo apt-get install -y wireguard wireguard-tools
+```
+
+#### Step 3: Generate Keys
+
+Generate a keypair for the server (NASPi) and one per client device.
+
+```bash
+# Server keys
+sudo wg genkey | sudo tee /etc/wireguard/server.key | sudo wg pubkey | sudo tee /etc/wireguard/server.pub
+sudo chmod 600 /etc/wireguard/server.key
+
+# Client keys — repeat for each device (laptop, phone, etc.)
+sudo wg genkey | sudo tee /etc/wireguard/client1.key | sudo wg pubkey | sudo tee /etc/wireguard/client1.pub
+sudo chmod 600 /etc/wireguard/client1.key
+
+# View the keys you'll need for the config files
+sudo cat /etc/wireguard/server.key   # → SERVER_PRIVATE_KEY
+sudo cat /etc/wireguard/server.pub   # → SERVER_PUBLIC_KEY
+sudo cat /etc/wireguard/client1.key  # → CLIENT_PRIVATE_KEY
+sudo cat /etc/wireguard/client1.pub  # → CLIENT_PUBLIC_KEY
+```
+
+#### Step 4: Create the Server Config
+
+```bash
+sudo nano /etc/wireguard/wg0.conf
+```
+
+```ini
 [Interface]
-PrivateKey = [your_server_private_key]
-Address = 100.64.0.1/24
+PrivateKey = <SERVER_PRIVATE_KEY>
+Address    = 100.64.0.1/24
 ListenPort = 51820
-PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
-PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE
+
+# NAT: routes VPN client traffic out through eth0 to the LAN
+PostUp   = iptables -A FORWARD -i %i -j ACCEPT; \
+           iptables -A FORWARD -o %i -j ACCEPT; \
+           iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+PostDown = iptables -D FORWARD -i %i -j ACCEPT; \
+           iptables -D FORWARD -o %i -j ACCEPT; \
+           iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE
+
+# --- Client devices (add one [Peer] block per device) ---
+
+# Client 1 (e.g., laptop)
+[Peer]
+PublicKey  = <CLIENT_PUBLIC_KEY>
+AllowedIPs = 100.64.0.2/32
+```
+
+```bash
+sudo chmod 600 /etc/wireguard/wg0.conf
+```
+
+#### Step 5: Create the Client Config
+
+Copy this to the client device (import into the WireGuard app on phone/laptop). Generate one config per device, incrementing the client IP (`.2`, `.3`, etc.).
+
+```ini
+[Interface]
+PrivateKey = <CLIENT_PRIVATE_KEY>
+Address    = 100.64.0.2/32
+DNS        = 1.1.1.1
 
 [Peer]
-PublicKey = [client_public_key]
-AllowedIPs = 100.64.0.2/32
+PublicKey           = <SERVER_PUBLIC_KEY>
+Endpoint            = <YOUR_PUBLIC_IP_OR_DDNS>:51820
+AllowedIPs          = 192.168.1.0/24, 100.64.0.0/24
+PersistentKeepalive = 25
+```
 
-# Enable WireGuard
+> **AllowedIPs explained:** `192.168.1.0/24, 100.64.0.0/24` is a split tunnel — only LAN and VPN traffic goes through NASPi. The client's regular internet traffic goes directly. This is preferred for a NAS access use case (not a full privacy VPN).
+
+#### Step 6: Enable and Start WireGuard
+
+```bash
 sudo systemctl enable wg-quick@wg0
 sudo systemctl start wg-quick@wg0
 
-# Verify
+# Verify the interface is up and the peer is listed
 sudo wg show
 ```
+
+#### Step 7: Home Router Port Forwarding
+
+For remote access to work, your current home router (not the future Pi 5 router) must forward inbound UDP traffic to NASPi:
+
+```
+Protocol : UDP
+Port     : 51820
+Forward to: 192.168.1.x (NASPi's static LAN IP)
+```
+
+This is configured in your router's admin UI (typically at 192.168.1.1). The exact steps vary by router model.
+
+#### Verify
+
+```bash
+# Interface is up, peer is listed
+sudo wg show
+
+# wg0 has the expected IP
+ip addr show wg0
+
+# From a connected client device, ping NASPi's VPN IP
+ping 100.64.0.1
+
+# From a connected client, reach NASPi's Jellyfin
+# https://100.64.0.1:8920
+```
+
+---
+
+#### Future Router Note
+
+> **Read this before adding a Pi 5 router to the network.**
+>
+> This phase configures NASPi as a **standalone WireGuard server** — it accepts incoming VPN connections directly and NATs traffic to the LAN. When a Pi 5 privacy router is introduced between NASPi and the internet, this configuration will need to change.
+>
+> **What will change:**
+> - The Pi 5 router becomes the WireGuard server; NASPi becomes a **peer/client** on the router's VPN network
+> - `ListenPort` is removed from NASPi's `wg0.conf` (NASPi no longer accepts direct connections)
+> - The `PostUp`/`PostDown` NAT masquerading lines are removed (the router handles routing)
+> - A `[Peer]` block pointing to the Pi 5 router replaces the current client peer block
+> - The UFW rule `allow 51820/udp` on NASPi is removed or restricted to the router's LAN IP
+>
+> **What stays the same:**
+> - The WireGuard package — no reinstall needed
+> - NASPi's keypair — keys can be reused or re-registered on the router
+> - All other phases — Jellyfin, Nextcloud, nginx, UFW rules for LAN services are unaffected
+>
+> The reconfiguration is a `wg0.conf` edit and two UFW rule changes. No data is at risk.
 
 ### Phase 6: Firewall & Hardening (2 hours)
 
