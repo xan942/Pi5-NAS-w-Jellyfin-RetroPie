@@ -57,7 +57,7 @@ RESULT:   ✅ LUKS encryption (AES-256)
 3. [Phases 1-9 Configuration](#phases-1-9-configuration) - Core NAS setup
    - [Phase 1: Ubuntu Installation](#phase-1-ubuntu-installation-2-hours)
    - [Phase 2: NVMe Partitioning & LUKS Encryption](#phase-2-nvme-partitioning--luks-encryption-1-2-hours)
-   - [Phase 3: Jellyfin](#phase-3-jellyfin-2-hours)
+   - [Phase 3: Nextcloud + Jellyfin Practical Setup](#phase-3-nextcloud--jellyfin-practical-setup-3-hours)
    - [Phase 3.5: Jellyfin Security Hardening](#phase-35-jellyfin-security-hardening-2-3-hours)
    - [Phase 4: RetroArch + EmulationStation](#phase-4-retroarch--emulationstation-15-hours)
    - [Phase 5: WireGuard VPN](#phase-5-wireguard-vpn-15-hours)
@@ -242,7 +242,7 @@ LAYER 1: Authentication & Access
 |-------|-----------|------|--------|
 | 1 | Ubuntu Installation | 2 hrs | Ubuntu 24.04 LTS booting from NVMe |
 | 2 | NVMe Partitioning & LUKS Encryption | 1-2 hrs | 3-partition layout, data volume AES-256 encrypted |
-| 3 | Jellyfin | 2 hrs | 4K media server running on encrypted storage |
+| 3 | Nextcloud + Jellyfin | 3 hrs | File sync + media streaming, shared directory on encrypted volume |
 | 3.5 | Jellyfin Security Hardening | 2-3 hrs | HTTPS via nginx, Fail2ban, audit logging |
 | 4 | RetroArch + EmulationStation | 1.5 hrs | 50+ system game emulation on NVMe |
 | 5 | WireGuard VPN | 1.5 hrs | Encrypted remote access tunnel |
@@ -398,24 +398,186 @@ nvme0n1p3  [xG]  part  crypto_LUKS
 └─data      [xG]  crypt ext4        /mnt/data      data
 ```
 
-### Phase 3: Jellyfin (2 hours)
+### Phase 3: Nextcloud + Jellyfin Practical Setup (3 hours)
+
+#### How They Work Together
+
+Nextcloud manages your files. Jellyfin streams your media. Both operate on the same underlying directories on the encrypted volume — no duplication, no syncing between services.
+
+```
+/mnt/data/nextcloud/<username>/files/
+├── Documents/        ← sync to devices via Nextcloud client
+├── Photos/           ← sync to devices via Nextcloud client
+└── Media/            ← do NOT sync (too large); stream via Jellyfin instead
+    ├── Movies/
+    ├── TV/
+    └── Music/
+```
+
+When you add a file through Nextcloud (web, desktop, or mobile), Jellyfin sees it automatically once it scans. When you delete through Nextcloud, it disappears from Jellyfin on next scan. One source of truth.
+
+---
+
+#### Part A: Install and Configure Nextcloud (1.5 hrs)
 
 ```bash
-# Install Jellyfin
-sudo apt-get install jellyfin
+# Install Nextcloud via snap (includes Apache, PHP, MariaDB — no manual stack needed)
+sudo snap install nextcloud
 
-# Create storage structure
-sudo mkdir -p /mnt/data/jellyfin/{library,movies,tv,music}
-sudo chown -R jellyfin:jellyfin /mnt/data/jellyfin
+# Allow the snap to access /mnt paths (required to use our encrypted volume)
+sudo snap connect nextcloud:removable-media
 
-# Enable and start
-sudo systemctl enable jellyfin
-sudo systemctl start jellyfin
+# Initial setup — creates the admin account and default data directory
+# Use a strong password; this is your Nextcloud admin login
+sudo nextcloud.manual-install <admin-username> <strong-password>
+```
 
-# Access and configure
-# Visit http://192.168.1.x:8096
-# Add library locations pointing to encrypted storage
-# Continue to Phase 3.5 for security hardening
+**Move data directory to the encrypted volume:**
+
+```bash
+# Stop Nextcloud before moving data
+sudo snap stop nextcloud
+
+# Create the target data directory
+sudo mkdir -p /mnt/data/nextcloud
+
+# Copy existing data (the initial admin skeleton files)
+sudo cp -a /var/snap/nextcloud/common/nextcloud/data/. /mnt/data/nextcloud/
+
+# Tell Nextcloud the new data location
+sudo nextcloud.occ config:system:set datadirectory --value="/mnt/data/nextcloud"
+
+# Restart
+sudo snap start nextcloud
+
+# Verify Nextcloud can see its data
+sudo nextcloud.occ status
+```
+
+**Configure trusted domain (your Pi's LAN IP):**
+
+```bash
+# Replace 192.168.1.x with your Pi's actual static IP
+sudo nextcloud.occ config:system:set trusted_domains 1 --value="192.168.1.x"
+
+# Access Nextcloud at:
+# http://192.168.1.x
+# Log in with the admin credentials set above
+```
+
+**Create the directory structure for media and documents:**
+
+```bash
+# Replace <admin-username> with the username you set above
+NC_FILES="/mnt/data/nextcloud/<admin-username>/files"
+
+sudo mkdir -p "$NC_FILES/Documents"
+sudo mkdir -p "$NC_FILES/Photos"
+sudo mkdir -p "$NC_FILES/Media/Movies"
+sudo mkdir -p "$NC_FILES/Media/TV"
+sudo mkdir -p "$NC_FILES/Media/Music"
+
+# Register the new folders with Nextcloud's file index
+sudo nextcloud.occ files:scan --all
+```
+
+---
+
+#### Part B: Install and Configure Jellyfin (1 hr)
+
+```bash
+# Install Jellyfin from the official repository
+curl -fsSL https://repo.jellyfin.org/install-debuntu.sh | sudo bash
+
+sudo systemctl enable --now jellyfin
+
+# Confirm it's running
+sudo systemctl status jellyfin
+
+# Access the setup wizard at:
+# http://192.168.1.x:8096
+```
+
+**Give Jellyfin read access to Nextcloud's media files:**
+
+Nextcloud owns its data directory. Jellyfin runs as the `jellyfin` user. Use ACLs to grant read access without changing ownership.
+
+```bash
+sudo apt-get install -y acl
+
+# Replace <admin-username> with your Nextcloud admin username
+MEDIA_DIR="/mnt/data/nextcloud/<admin-username>/files/Media"
+
+# Grant jellyfin user read + execute on existing files
+sudo setfacl -R -m u:jellyfin:rx "$MEDIA_DIR"
+
+# Set default ACL so new files added via Nextcloud inherit the permission
+sudo setfacl -R -d -m u:jellyfin:rx "$MEDIA_DIR"
+
+# Verify
+getfacl "$MEDIA_DIR"
+```
+
+**Add libraries in the Jellyfin setup wizard:**
+
+```
+In the browser at http://192.168.1.x:8096 → initial setup wizard:
+
+Add media library → Movies
+  Folder: /mnt/data/nextcloud/<admin-username>/files/Media/Movies
+
+Add media library → Shows
+  Folder: /mnt/data/nextcloud/<admin-username>/files/Media/TV
+
+Add media library → Music
+  Folder: /mnt/data/nextcloud/<admin-username>/files/Media/Music
+```
+
+Complete the wizard. Jellyfin will scan the folders — they will be empty until you add media files.
+
+---
+
+#### Part C: Selective Sync Strategy
+
+The Nextcloud desktop and mobile clients support selective sync. Configure clients to sync only lightweight folders:
+
+```
+SYNC these folders (small, frequently accessed):
+  ✅ Documents/
+  ✅ Photos/
+
+DO NOT SYNC (too large — access via Jellyfin streaming instead):
+  ❌ Media/Movies
+  ❌ Media/TV
+  ❌ Media/Music
+```
+
+To add media: copy files directly to the NAS via SFTP, or upload through the Nextcloud web interface, then trigger a Jellyfin library scan:
+
+```bash
+# Manual scan after adding media files
+sudo nextcloud.occ files:scan --all        # update Nextcloud index
+# Then in Jellyfin: Dashboard → Libraries → [library] → Scan library
+```
+
+---
+
+#### Verify
+
+```bash
+# Nextcloud is running
+sudo snap services nextcloud
+
+# Jellyfin is running
+sudo systemctl status jellyfin
+
+# Data lives on the encrypted volume
+df -h /mnt/data
+du -sh /mnt/data/nextcloud/
+
+# ACLs are set on Media directory
+getfacl /mnt/data/nextcloud/<admin-username>/files/Media
+# Should show: user:jellyfin:r-x
 ```
 
 ### Phase 3.5: Jellyfin Security Hardening (2-3 hours)
