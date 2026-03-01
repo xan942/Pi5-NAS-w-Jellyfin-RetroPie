@@ -76,96 +76,87 @@ RESULT:   ✅ LUKS encryption (AES-256)
 ### Hardware Setup
 
 ```
-Raspberry Pi 5 (8GB)
-├─ PCIe Gen 3 x4 (true speed, not USB bottleneck)
-├─ Kingston P34A60 SSD (238GB+)
-│  ├─ nvme0n1p1 (512M) - /boot/firmware  (vfat)
-│  ├─ nvme0n1p2  (50G) - /              (ext4, OS root)
-│  └─ nvme0n1p3  (remaining) - LUKS encrypted data
+Raspberry Pi 5 (8GB RAM)
+├─ Waveshare PCIe HAT (PCIe Gen 3 x4 — native NVMe, no USB bottleneck)
+├─ NVMe SSD
+│  ├─ nvme0n1p1  512M   vfat        /boot/firmware   (EFI/boot)
+│  ├─ nvme0n1p2   50G   ext4        /                (Ubuntu OS root)
+│  └─ nvme0n1p3  rest   LUKS2/ext4  /mnt/data        (encrypted user data)
 │     └─ /dev/mapper/data → /mnt/data
-│        ├─ Nextcloud data (documents, photos)
-│        ├─ Jellyfin media (movies, TV, music)
-│        └─ RetroArch ROMs & EmulationStation configs
-├─ Active cooling (fan + heatsink)
-├─ Gigabit Ethernet (streaming)
-└─ 25W official PSU (vs 150W servers)
+│        ├─ nextcloud/   (Nextcloud data root — documents, photos, media)
+│        ├─ jellyfin/    (Jellyfin metadata cache)
+│        └─ retroarch/   (ROMs, saves, BIOS, configs)
+├─ microSD card          (initial boot / fallback only — OS lives on NVMe)
+├─ Active cooling        (heatsink + fan)
+├─ Gigabit Ethernet      (wired — required for 4K streaming reliability)
+└─ 27W official PSU
 ```
 
 ### Software Architecture
 
 ```
 LAYER 1: Applications
-├─ Jellyfin (8920 HTTPS) - Media streaming
-├─ Nextcloud (443 HTTPS) - File sync  
-├─ RetroArch + EmulationStation - Game emulation (on NVMe)
-└─ SSH (2222) - Remote access
+├─ Nextcloud (port 80/443) - File sync via snap (Apache + MariaDB built-in)
+├─ Jellyfin  (port 8096)   - Media server (internal, not exposed directly)
+├─ RetroArch + EmulationStation - Game emulation, data on /mnt/data
+└─ SSH (port 22 → 2222 after Phase 6 hardening)
 
-LAYER 2: Dashboards
-├─ Cockpit (9090) - System administration
-└─ Netdata (19999) - Real-time monitoring
+LAYER 2: Reverse Proxy & HTTPS
+└─ nginx (port 8920 HTTPS) - TLS termination + security headers for Jellyfin
+                              (proxies to Jellyfin on localhost:8096)
 
-LAYER 3: Security Tools
-├─ Fail2ban - Brute-force protection
-├─ AIDE - File integrity monitoring
-├─ auditd - System auditing
-├─ Tripwire - Filesystem verification
-├─ AppArmor - Mandatory access control
-└─ UFW - Firewall (default deny)
+LAYER 3: Monitoring Dashboards
+├─ Cockpit (port 9090 HTTPS) - System administration UI
+└─ Netdata (port 19999 HTTP) - Real-time metrics (LAN-only via UFW)
 
-LAYER 4: Network & Encryption
-├─ WireGuard VPN (51820) - Secure tunnel
-├─ SSL/TLS - HTTPS encryption
-├─ rsyslog - Centralized logging
-└─ Email alerts - Notifications
+LAYER 4: Security Tools
+├─ Fail2ban  - Brute-force protection (Jellyfin + SSH jails)
+├─ AIDE      - File integrity monitoring (daily scan, email report)
+├─ auditd    - Syscall-level audit logging
+├─ AppArmor  - Mandatory access control (enforcing mode)
+└─ UFW       - Stateful firewall (default deny inbound)
 
-LAYER 5: Encryption (At-Rest)
-└─ LUKS data volume (nvme0n1p3) - AES-256
+LAYER 5: Network Security
+├─ WireGuard VPN (port 51820 UDP) - Encrypted remote access tunnel
+├─ Self-signed TLS (nginx)        - HTTPS for Jellyfin on LAN/VPN
+└─ rsyslog                        - Centralized log aggregation
 
-LAYER 6: OS
-└─ Ubuntu 24.04 LTS ARM64
+LAYER 6: Encryption at Rest
+└─ LUKS2 (nvme0n1p3) - AES-256-XTS, unlocked at boot via crypttab
 
-BASE: Hardware
-└─ Raspberry Pi 5 + Kingston SSD
+BASE: OS + Hardware
+├─ Ubuntu 24.04 LTS ARM64
+└─ Raspberry Pi 5 + Waveshare PCIe HAT + NVMe SSD
 ```
 
-### Security Layers (6-Deep)
+### Security Layers (5-Deep)
 
 ```
-LAYER 6: System Hardening
-├─ AppArmor mandatory access control
-├─ Auto security updates
-├─ Immutable critical files
-└─ Disabled unnecessary modules
+LAYER 5: System Hardening
+├─ AppArmor (enforcing mode)
+├─ unattended-upgrades (automatic security patches)
+└─ UFW default-deny inbound
 
-LAYER 5: Monitoring & Logging
+LAYER 4: Monitoring & Alerting
 ├─ Centralized rsyslog
-├─ Email security alerts
-├─ Tripwire integrity
-└─ Log analysis
+├─ Netdata email alerts (disk, CPU, memory thresholds)
+└─ Jellyfin auth failure log monitoring
 
-LAYER 4: Intrusion Detection
-├─ AIDE file monitoring (daily)
+LAYER 3: Intrusion Detection
+├─ AIDE daily file integrity checks
 ├─ auditd syscall logging
-├─ Unauthorized change alerts
-└─ Forensic data collection
+└─ Fail2ban active banning (Jellyfin + SSH)
 
-LAYER 3: In-Transit Encryption
-├─ WireGuard VPN (all remote)
-├─ SSL/TLS (web services)
-├─ SFTP (file transfers)
-└─ DNS over HTTPS (optional)
+LAYER 2: In-Transit Encryption
+├─ WireGuard VPN (all remote access)
+├─ nginx TLS (HTTPS for Jellyfin on port 8920)
+└─ Nextcloud HTTPS (snap-managed certificate)
 
-LAYER 2: At-Rest Encryption
-├─ LUKS data volume (AES-256)
-└─ Passphrase protection
-
-LAYER 1: Authentication & Access
-├─ SSH key-based auth
-├─ Fail2ban protection
-├─ IP whitelisting
-├─ Non-standard ports
-├─ Session timeouts
-└─ 2FA on Jellyfin (optional)
+LAYER 1: At-Rest Encryption & Access Control
+├─ LUKS2 data volume (AES-256-XTS, passphrase-protected)
+├─ SSH key-based authentication
+├─ UFW IP whitelisting (LAN + VPN ranges only)
+└─ Fail2ban brute-force lockout
 ```
 
 ---
@@ -174,63 +165,92 @@ LAYER 1: Authentication & Access
 
 ### Why Raspberry Pi 5?
 
-**PCIe Gen 3 x4 is the game-changer:**
-- Pi 4: USB 3.0 bottleneck (400 MB/s max)
-- Pi 5: Native PCIe Gen 3 x4 (2,400 MB/s, no bottleneck)
-- Result: SSD speed isn't wasted
+**PCIe Gen 3 x4 changes everything:**
+- Pi 4: USB 3.0 bottleneck (400 MB/s max regardless of SSD speed)
+- Pi 5: Native PCIe Gen 3 x4 via Waveshare HAT (theoretical 3,500 MB/s — SSD is the real limit)
+- Result: NVMe performs at actual NVMe speeds, not USB speeds
 
-**Why not x86 server?**
-- 150W power = $100+/year electricity cost
-- Loud cooling in home environment
-- Older, less flexible
+**Why not an x86 server?**
+- 150W idle draw = ~$130/year in electricity (Pi 5 draws ~5-10W idle)
+- Fan noise in a home environment
+- Larger physical footprint
+- Pi 5 runs Ubuntu 24.04 LTS with full apt ecosystem — it's not a toy
 
-**Why Kingston P34A60?**
-- Matches Pi 5 Gen 3 speed (not Gen 4 waste)
-- Good price/performance at matched spec
-- Professional reliability (MTBF 1.6M hours)
+### Why Waveshare PCIe HAT?
+
+- Exposes the Pi 5's PCIe Gen 3 interface to a standard M.2 NVMe slot
+- Passive design — no additional power draw beyond the HAT connector
+- Widely tested with Pi 5; known-good compatibility with Ubuntu
+
+### Why NVMe over USB SSD or microSD?
+
+- MicroSD: ~50 MB/s sequential, high failure rate under sustained writes — unsuitable as a NAS drive
+- USB SSD: ~400 MB/s cap due to USB 3.0 controller, adds latency
+- NVMe on PCIe: 1,000–3,500 MB/s sequential — no artificial bottleneck, durable under continuous workload
 
 ### Why Ubuntu 24.04 LTS?
 
-- **LTS = 5-year security updates** (until 2029)
-- Enterprise ecosystem (Cockpit built-in)
-- Industry standard (job market skill)
-- Official support for Pi 5 ARM64
+- **LTS = 5-year security support** (until April 2029)
+- Official Raspberry Pi 5 ARM64 image with maintained kernel
+- Full apt ecosystem: Cockpit, Netdata, Fail2ban, AIDE, auditd all available as packages
+- Familiar environment for server administration (not Pi-OS specific)
 
-### Why LUKS (Single Volume)?
+### Why LUKS2 (Single Volume on p3)?
 
-- **Standard:** Works on any Linux system
-- **Portable:** Data not vendor-locked
-- **Simple:** One passphrase, one partition to manage
-- **Efficient:** All available space goes to user data
+- **One passphrase, one partition** — simple to manage, nothing spread across multiple volumes
+- **Standard:** cryptsetup/LUKS is built into every major Linux distribution
+- **Portable:** If the SSD is moved to another machine, any Linux system can unlock it
+- **Separation from OS:** p1 and p2 (boot/root) are unencrypted so the system boots normally; only user data requires the passphrase
+- **AES-256-XTS** is hardware-accelerated on the Pi 5's Cortex-A76 cores
 
-### Why Nextcloud (not Samba)?
+### Why Nextcloud (not Samba/SMB)?
 
-- **Auto-sync:** Modern expectation (cloud-like)
-- **Collaboration:** Edit docs together
-- **Versioning:** Recover old file versions
-- **Privacy:** Open-source, self-hosted
-- **Mobile:** Native apps (iOS/Android)
+- **Active sync:** Samba is a file share you mount; Nextcloud actively syncs to devices like Dropbox
+- **Mobile apps:** Native iOS and Android clients with automatic photo backup
+- **File versioning:** Recover previous versions of any file
+- **Selective sync:** Sync only what you need (documents), not your entire media library
+- **Self-hosted and open-source:** No vendor lock-in, no cloud subscription
+
+### Why Nextcloud via snap?
+
+- Single command install — Apache, PHP, and MariaDB are bundled and pre-configured inside the snap
+- Automatic internal updates managed by the snap
+- Isolated from the host system's PHP/Apache stack (no version conflicts)
+- Trade-off: slightly less flexible than a manual LAMP stack, but the reduced complexity is worth it for a home NAS
 
 ### Why Jellyfin (not Plex)?
 
-- **Open-source:** No proprietary control
-- **Self-hosted:** Data stays on your server
-- **Privacy:** No cloud account required
-- **Free:** Forever (no paywall features)
+- **No account required:** Plex requires a plex.tv account even for local streaming
+- **No paywall:** Plex locks 4K transcoding and downloads behind Plex Pass
+- **Open-source:** Jellyfin is fully community-maintained; no proprietary relay servers
+- **Privacy:** Media activity stays on your hardware — Plex phones home
+
+### Why nginx as Reverse Proxy for Jellyfin?
+
+- Jellyfin's built-in HTTPS requires a PKCS12 (.pfx) certificate — nginx handles standard PEM certs directly
+- nginx adds security headers (HSTS, X-Frame-Options, CSP) that Jellyfin doesn't set natively
+- WebSocket proxying for Jellyfin's real-time session updates is straightforward in nginx
+- Keeps Jellyfin itself on localhost:8096 (not exposed) while nginx handles the public-facing port 8920
+
+### Why RetroArch + EmulationStation (not RetroPie)?
+
+- RetroPie is built for Raspberry Pi OS and is not officially supported on Ubuntu 24.04
+- RetroArch is available in the Ubuntu apt repository and runs natively on ARM64
+- EmulationStation provides the same game-browsing frontend experience
+- ROMs and saves stored on /mnt/data (encrypted NVMe) rather than microSD — faster loading, more storage
 
 ### Why WireGuard VPN?
 
-- **Fast:** 400+ MB/s (vs OpenVPN 150 MB/s)
-- **Simple:** 1,000 lines of code (vs 100,000)
-- **Modern:** ChaCha20 encryption
-- **Low CPU:** <1% (vs OpenVPN 5%)
+- **Fast:** Consistently 300–400 MB/s on Pi-class hardware (vs OpenVPN ~80 MB/s)
+- **Simple:** ~4,000 lines of code in the kernel module (vs ~400,000 for OpenVPN)
+- **Modern cryptography:** ChaCha20-Poly1305, Curve25519 — not legacy cipher suites
+- **Low overhead:** <1% CPU at idle on the Pi 5; OpenVPN requires continuous userspace processing
 
 ### Why Cockpit + Netdata?
 
-- **Complementary:** Cockpit admin + Netdata monitoring
-- **Simple:** 5-minute setup (apt install)
-- **Professional:** Yet easy for home use
-- **Lightweight:** ~50MB RAM combined
+- **Different roles:** Cockpit is for administration (manage services, storage, users, firewall); Netdata is for real-time observability (CPU, disk I/O, memory, per-process)
+- **Zero configuration:** Both work immediately after `apt install`
+- **Lightweight:** Cockpit is socket-activated (zero overhead when not in use); Netdata uses ~50–80MB RAM
 
 ---
 
