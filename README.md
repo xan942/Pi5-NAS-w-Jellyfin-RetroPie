@@ -4,9 +4,9 @@
 > RetroArch + EmulationStation gaming, WireGuard VPN, and layered security.
 > Complete step-by-step guide from bare hardware to production system.
 
-[![Status](https://img.shields.io/badge/Status-Production--Ready-brightgreen)](NASPi_Guide_v1.md)
-[![Platform](https://img.shields.io/badge/Platform-Pi%205%20%2B%20Ubuntu%2024.04%20LTS-blue)](NASPi_Guide_v1.md)
-[![Phases](https://img.shields.io/badge/Phases-1--9-purple)](NASPi_Guide_v1.md)
+[![Status](https://img.shields.io/badge/Status-Production--Ready-brightgreen)](NASPi_Guide.md)
+[![Platform](https://img.shields.io/badge/Platform-Pi%205%20%2B%20Ubuntu%2024.04%20LTS-blue)](NASPi_Guide.md)
+[![Phases](https://img.shields.io/badge/Phases-1--9-purple)](NASPi_Guide.md)
 [![License](https://img.shields.io/badge/License-MIT-green)]()
 
 ---
@@ -104,10 +104,10 @@ Each phase has a **Verify** section to confirm the setup before moving on, and a
 
 ## The Guide
 
-Everything is in [`NASPi_Guide_v1.md`](NASPi_Guide_v1.md) — one document, start to finish.
+Everything is in [`NASPi_Guide.md`](NASPi_Guide.md) — one document, start to finish.
 
 ```
-NASPi_Guide_v1.md
+NASPi_Guide.md
 ├── Project Summary
 ├── Architecture & Design     — hardware diagram, software layers, security model
 ├── Technology Reasoning      — why every tool was chosen over the alternatives
@@ -145,7 +145,7 @@ Internet
 ```
 Pi5-NAS-w-Jellyfin-RetroPie/
 ├── README.md           ← This file
-├── NASPi_Guide_v1.md  ← Complete implementation guide (Phases 1–9)
+├── NASPi_Guide.md  ← Complete implementation guide (Phases 1–9)
 └── Old Docs/          ← Legacy reference documents (pre-rewrite, kept for reference)
 ```
 
