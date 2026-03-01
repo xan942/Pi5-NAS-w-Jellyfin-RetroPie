@@ -1396,22 +1396,223 @@ systemctl is-active unattended-upgrades
 
 ### Phase 7: Monitoring & Logging (1.5 hours)
 
+#### Step 1: Centralised Security Logging with rsyslog
+
+rsyslog is already running on Ubuntu 24.04. Add a drop-in config to route NAS-relevant events to dedicated log files.
+
 ```bash
-# Configure rsyslog for security logging
-sudo nano /etc/rsyslog.d/99-nas-monitoring.conf
+sudo mkdir -p /var/log/nas
+sudo chown root:adm /var/log/nas
 
-# Add entries for service monitoring, SSH logging, etc
+sudo nano /etc/rsyslog.d/99-nas.conf
+```
 
-# Create health check script
-nano ~/health-check-advanced.sh
-# (Shows disk usage, memory, services, temperature)
+```
+# /etc/rsyslog.d/99-nas.conf
 
-# Schedule daily
+# SSH logins, sudo, PAM authentication events
+auth,authpriv.*                     /var/log/nas/auth.log
+
+# UFW firewall blocks
+:msg, contains, "[UFW BLOCK]"       /var/log/nas/firewall.log
+& stop
+
+# Fail2ban bans and unbans
+:programname, isequal, "fail2ban"   /var/log/nas/fail2ban.log
+& stop
+
+# nginx errors
+:programname, isequal, "nginx"      /var/log/nas/nginx.log
+& stop
+```
+
+```bash
+sudo systemctl restart rsyslog
+
+# Confirm logs are being written (may take a moment for events to arrive)
+ls -lh /var/log/nas/
+
+# Trigger a test entry
+logger -p auth.info "rsyslog test entry"
+grep "rsyslog test" /var/log/nas/auth.log
+```
+
+---
+
+#### Step 2: Log Rotation
+
+Prevent the NAS log files from consuming unbounded disk space.
+
+```bash
+sudo nano /etc/logrotate.d/nas
+```
+
+```
+/var/log/nas/*.log {
+    daily
+    rotate 30
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 640 root adm
+    sharedscripts
+    postrotate
+        systemctl reload rsyslog > /dev/null 2>&1 || true
+    endscript
+}
+```
+
+```bash
+# Test rotation config for syntax errors
+sudo logrotate --debug /etc/logrotate.d/nas
+```
+
+---
+
+#### Step 3: Email Alerts
+
+Install mailutils with Postfix configured as a Gmail SMTP relay. You need a **Gmail App Password** (not your regular Gmail password) — generate one at https://myaccount.google.com/apppasswords.
+
+```bash
+sudo apt-get install -y mailutils
+# When the Postfix installer prompts: select "Internet Site" → hostname: naspi
+```
+
+Configure Postfix to relay through Gmail:
+
+```bash
+sudo nano /etc/postfix/main.cf
+```
+
+Add or update these lines at the bottom:
+
+```
+relayhost = [smtp.gmail.com]:587
+smtp_use_tls = yes
+smtp_sasl_auth_enable = yes
+smtp_sasl_password_maps = hash:/etc/postfix/sasl_passwd
+smtp_sasl_security_options = noanonymous
+smtp_tls_CAfile = /etc/ssl/certs/ca-certificates.crt
+```
+
+```bash
+# Store Gmail credentials
+echo "[smtp.gmail.com]:587 your@gmail.com:your-app-password" | sudo tee /etc/postfix/sasl_passwd
+sudo postmap /etc/postfix/sasl_passwd
+sudo chmod 600 /etc/postfix/sasl_passwd /etc/postfix/sasl_passwd.db
+
+sudo systemctl restart postfix
+
+# Test — should arrive in your inbox within a minute
+echo "NASPi email test" | mail -s "NASPi Test" your@gmail.com
+```
+
+---
+
+#### Step 4: Health Check Script
+
+```bash
+nano ~/health-check.sh
+```
+
+```bash
+#!/bin/bash
+# NASPi Daily Health Check
+ALERT_EMAIL="your@gmail.com"
+SUBJECT="NASPi Health Report - $(date '+%Y-%m-%d')"
+
+report() {
+  echo "=== NASPi Health Report - $(date) ==="
+  echo ""
+
+  echo "--- Disk Usage ---"
+  df -h / /boot/firmware /mnt/data 2>/dev/null
+  echo ""
+
+  echo "--- LUKS Volume ---"
+  sudo cryptsetup status data 2>/dev/null | grep -E "type|cipher|keysize|device|size"
+  echo ""
+
+  echo "--- Memory ---"
+  free -h
+  echo ""
+
+  echo "--- CPU Temperature ---"
+  awk '{printf "%.1f°C\n", $1/1000}' /sys/class/thermal/thermal_zone0/temp
+  echo ""
+
+  echo "--- System Uptime ---"
+  uptime
+  echo ""
+
+  echo "--- Service Status ---"
+  for svc in ssh nginx jellyfin fail2ban wg-quick@wg0 unattended-upgrades; do
+    status=$(systemctl is-active "$svc" 2>/dev/null)
+    echo "  $svc: $status"
+  done
+  echo ""
+
+  echo "--- Nextcloud Status ---"
+  sudo nextcloud.occ status 2>/dev/null | head -4
+  echo ""
+
+  echo "--- Recent Auth Failures (last 24h) ---"
+  grep -i "failed\|invalid\|denied" /var/log/nas/auth.log 2>/dev/null \
+    | grep "$(date '+%b %e')" | tail -10 \
+    || echo "  None"
+  echo ""
+
+  echo "--- Active Fail2ban Bans ---"
+  sudo fail2ban-client status 2>/dev/null | grep "Jail list" || echo "  fail2ban not running"
+  echo ""
+}
+
+report | tee /tmp/naspi-health-report.txt | mail -s "$SUBJECT" "$ALERT_EMAIL"
+```
+
+```bash
+chmod +x ~/health-check.sh
+
+# Run once manually to verify output and confirm email arrives
+~/health-check.sh
+```
+
+---
+
+#### Step 5: Schedule Cron Jobs
+
+```bash
 crontab -e
-0 6 * * * ~/health-check-advanced.sh
+```
 
-# Configure mail for alerts
-sudo apt-get install mailutils
+Add these entries:
+
+```cron
+# Daily health report at 6:00 AM
+0 6 * * * /home/pi/health-check.sh
+
+# Weekly: check for UFW blocks from overnight
+0 7 * * 1 grep "[UFW BLOCK]" /var/log/nas/firewall.log | tail -20 | mail -s "NASPi Weekly Firewall Report" your@gmail.com
+```
+
+---
+
+#### Verify
+
+```bash
+# rsyslog routing is active
+sudo systemctl status rsyslog
+
+# Logs directory populated
+ls -lh /var/log/nas/
+
+# Postfix is running and relaying
+sudo systemctl status postfix
+sudo tail -5 /var/log/mail.log
+
+# Crontab saved correctly
+crontab -l
 ```
 
 ### Phase 8: Intrusion Detection (1.5 hours)
