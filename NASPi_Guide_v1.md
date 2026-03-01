@@ -240,17 +240,16 @@ LAYER 1: Authentication & Access
 
 | Phase | Component | Time | Result |
 |-------|-----------|------|--------|
-| 1 | OS Installation | 2 hrs | Ubuntu 24.04 running |
-| 2 | LUKS Encryption | 1-2 hrs | Single encrypted data volume |
-| 3 | Nextcloud + Jellyfin | 3 hrs | File sync + 4K media streaming |
-| 4 | RetroArch + EmulationStation | 1.5 hrs | Gaming emulation (50+ systems) |
-| 5 | WireGuard VPN | 1.5 hrs | Secure remote access |
-| 6 | Firewall & TLS | 2 hrs | Network protection |
-| 7 | Monitoring | 1.5 hrs | Health checks + alerts |
-| 8 | Intrusion Detect | 1.5 hrs | AIDE + auditd + Tripwire |
-| 9 | Management Dashboard | 15 min | Cockpit + Netdata |
-
-**Complete step-by-step:** See Pi5_NAS_Standalone_Setup_Guide_ENHANCED.md
+| 1 | Ubuntu Installation | 2 hrs | Ubuntu 24.04 LTS booting from NVMe |
+| 2 | NVMe Partitioning & LUKS Encryption | 1-2 hrs | 3-partition layout, data volume AES-256 encrypted |
+| 3 | Jellyfin | 2 hrs | 4K media server running on encrypted storage |
+| 3.5 | Jellyfin Security Hardening | 2-3 hrs | HTTPS via nginx, Fail2ban, audit logging |
+| 4 | RetroArch + EmulationStation | 1.5 hrs | 50+ system game emulation on NVMe |
+| 5 | WireGuard VPN | 1.5 hrs | Encrypted remote access tunnel |
+| 6 | Firewall & Hardening | 2 hrs | UFW default-deny, TLS certs, AppArmor |
+| 7 | Monitoring & Logging | 1.5 hrs | rsyslog, health checks, email alerts |
+| 8 | Intrusion Detection | 1.5 hrs | AIDE file integrity, auditd syscall logging |
+| 9 | Management Dashboard | 15 min | Cockpit admin UI + Netdata real-time metrics |
 
 ### Phase 1: Ubuntu Installation (2 hours)
 
